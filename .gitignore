@@ -20,3 +20,7 @@ confidence_intervals_report.pdf
 
 # бинарники
 *.pickle
+
+# Nix
+.devenv*
+.direnv*
