@@ -1,0 +1,22 @@
+# секреты
+.env
+
+# окружение и кэш
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.DS_Store
+
+# IDE
+.idea/
+
+# большие данные и дубли
+dataset_export/
+dataset_export 2/
+logs/
+data/results/
+confidence_intervals_report.pdf
+
+# бинарники
+*.pickle
