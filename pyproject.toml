@@ -15,7 +15,8 @@ main = []
 
 dev = [
     "ruff (>=0.14.10,<0.15.0)",
-    "mypy (>=1.19.1,<2.0.0)"
+    "mypy (>=1.19.1,<2.0.0)",
+    "pytest (>=9.2.0,<10.0.0)",
 ]
 
 [tool.poetry]
@@ -42,6 +43,9 @@ line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.12"
-strict = false
-ignore_missing_imports = true
-disallow_untyped_defs = false
+files = ["mbench", "tests"]
+strict = true
+
+[tool.pytest]
+testpaths = ["tests"]
+strict = true

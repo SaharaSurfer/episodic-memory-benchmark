@@ -7,6 +7,7 @@
   patchelf = lib.getExe pkgs.patchelf;
   ruffExe = "${config.devenv.root}/.venv/bin/ruff";
   mypyExe = "${config.devenv.root}/.venv/bin/mypy";
+  pytestExe = "${config.devenv.root}/.venv/bin/pytest";
 in {
   languages.python = {
     enable = true;
@@ -43,6 +44,12 @@ in {
     '';
     after = ["devenv:python:poetry"];
     before = ["devenv:enterShell" "devenv:git-hooks:run"];
+  };
+
+  tasks."tests:pytest" = {
+    exec = pytestExe;
+    after = ["devenv:git-hooks:run"];
+    before = ["devenv:enterTest"];
   };
 
   git-hooks.hooks = {

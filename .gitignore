@@ -4,3 +4,6 @@
 # Nix
 .devenv*
 .direnv*
+
+# Python bytecode
+__pycache__/
