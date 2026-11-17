@@ -264,17 +264,20 @@ def test_a_mutate_naming_a_value_its_action_fixes_or_needs_raises(
 def test_only_an_entitys_first_disclosure_is_read_for_its_type() -> None:
     world = World()
     account = world.open()
-    restated = Disclosure(
+    later = Disclosure(
         session=2,
         source="operator",
         action_type="NOT_A_PACK_ACTION",
         initiator="client",
         entity=account,
         relation="lastFour",
-        value=LastFour("4471"),
+        # A value other than the current one, so the fold makes a node rather
+        # than a mention, and reaches the entity-type lookup.
+        value=LastFour("9012"),
         node_id=NodeId("zzzzz"),
     )
 
-    graph = fold_trace((*world.records, restated), LOADED_PACK)
+    graph = fold_trace((*world.records, later), LOADED_PACK)
 
+    assert graph.versions((account, "lastFour")) == 2
     assert {node.type for node in graph.entity_nodes()} == {"DEPOSIT_ACCOUNT"}

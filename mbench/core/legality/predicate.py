@@ -3,9 +3,14 @@ from dataclasses import dataclass
 from enum import Enum
 
 from mbench.core.folds.registry import Entry, Registry, Stamped, is_live
-from mbench.core.records.commands import InitCommand, MutateCommand
+from mbench.core.records.commands import (
+    InitCommand,
+    MutateCommand,
+    ReadCommand,
+)
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import (
+    READ,
     Disclosure,
     Event,
     InitEvent,
@@ -25,6 +30,7 @@ class Reason(Enum):
     NOT_LIVE = "not_live"
     PAIR_ALREADY_WRITTEN = "pair_already_written"
     INVALID_VALUE = "invalid_value"
+    UNTRUE_DISCLOSURE = "untrue_disclosure"
     UNCHANGED_VALUE = "unchanged_value"
 
 
@@ -36,7 +42,8 @@ class Refusal:
     reason: Reason
 
 
-type Command = InitCommand | MutateCommand
+type EventCommand = InitCommand | MutateCommand
+type Command = EventCommand | ReadCommand
 
 
 def decide(
@@ -46,6 +53,9 @@ def decide(
     allocator: IdAllocator,
 ) -> tuple[Record, ...] | Refusal:
     """The records an accepted command produces, or why it is refused."""
+
+    if isinstance(command, ReadCommand):
+        return _decide_read(command, registry, allocator)
 
     writes = _writes(command, pack)
 
@@ -65,7 +75,7 @@ def decide(
 
 
 def refuse_unfit_referent(
-    command: Command, registry: Registry, pack: LoadedPack
+    command: EventCommand, registry: Registry, pack: LoadedPack
 ) -> Refusal | None:
     """Refuse a MUTATE on a missing, mistyped, gated-out or dead referent."""
 
@@ -94,8 +104,19 @@ def refuse_unfit_referent(
     return None
 
 
+def refuse_missing_entity(
+    command: ReadCommand, registry: Registry
+) -> Refusal | None:
+    """Refuse a READ of an entity the world does not hold."""
+
+    if registry.entry(command.entity) is None:
+        return Refusal(1, Reason.REFERENT_MISSING)
+
+    return None
+
+
 def refuse_second_write(
-    command: Command, writes: Mapping[str, ValueClass], registry: Registry
+    command: EventCommand, writes: Mapping[str, ValueClass], registry: Registry
 ) -> Refusal | None:
     """Refuse a write to a pair already written in the command's session."""
 
@@ -107,7 +128,7 @@ def refuse_second_write(
 
 
 def refuse_invalid_values(
-    command: Command, writes: Mapping[str, ValueClass], pack: LoadedPack
+    command: EventCommand, writes: Mapping[str, ValueClass], pack: LoadedPack
 ) -> Refusal | None:
     """Refuse a value its relation's class does not hold, or holds invalid."""
 
@@ -123,7 +144,7 @@ def refuse_invalid_values(
 
 
 def refuse_unchanged_value(
-    command: Command, writes: Mapping[str, ValueClass], registry: Registry
+    command: EventCommand, writes: Mapping[str, ValueClass], registry: Registry
 ) -> Refusal | None:
     """Refuse a write of the value its pair already holds."""
 
@@ -134,8 +155,28 @@ def refuse_unchanged_value(
     return None
 
 
+def refuse_untrue_disclosure(
+    disclosure: Disclosure, registry: Registry
+) -> Refusal | None:
+    """Refuse a disclosure of a value the world does not currently hold."""
+
+    entry = registry.entry(disclosure.entity)
+    current = None if entry is None else entry.values.get(disclosure.relation)
+
+    if current is None or not admits(current.value, disclosure.value):
+        return Refusal(4, Reason.UNTRUE_DISCLOSURE)
+
+    return None
+
+
+def admits(current: ValueClass, stated: ValueClass) -> bool:
+    """Whether a pair holding the current value may be said to hold another."""
+
+    return stated == current
+
+
 def _current(
-    command: Command, writes: Mapping[str, ValueClass], registry: Registry
+    command: EventCommand, writes: Mapping[str, ValueClass], registry: Registry
 ) -> Mapping[str, Stamped]:
     """The current stamped value of each pair the command writes, if any."""
 
@@ -155,7 +196,9 @@ def _current(
     }
 
 
-def _writes(command: Command, pack: LoadedPack) -> Mapping[str, ValueClass]:
+def _writes(
+    command: EventCommand, pack: LoadedPack
+) -> Mapping[str, ValueClass]:
     """The relation-to-value map the command's event will write."""
 
     action = pack.action_types[command.action_type]
@@ -248,4 +291,34 @@ def _disclosures(
             node_id=allocator.allocate(),
         )
         for relation, value in event.writes.items()
+    )
+
+
+def _decide_read(
+    command: ReadCommand, registry: Registry, allocator: IdAllocator
+) -> tuple[Record, ...] | Refusal:
+    """The READ's disclosures of the entity's current values, or a refusal."""
+
+    refusal = refuse_missing_entity(command, registry)
+    if refusal is not None:
+        return refusal
+
+    # Each value is copied from the registry, so these disclosures always
+    # pass `refuse_untrue_disclosure`, only a disclosure written by other
+    # means, as in a stored log, can fail it.
+    entry = registry.entry(command.entity)
+    assert entry is not None
+
+    return tuple(
+        Disclosure(
+            session=command.session,
+            source=command.source,
+            action_type=READ,
+            initiator=command.initiator,
+            entity=command.entity,
+            relation=relation,
+            value=current.value,
+            node_id=allocator.allocate(),
+        )
+        for relation, current in entry.values.items()
     )

@@ -33,3 +33,13 @@ class MutateCommand:
     referent: NodeId
     # None for a status action, which fixes the status it writes.
     value: ValueClass | None = None
+
+
+@dataclass(frozen=True)
+class ReadCommand:
+    """A request that a source state an entity's current values."""
+
+    session: int
+    initiator: str
+    source: str
+    entity: NodeId

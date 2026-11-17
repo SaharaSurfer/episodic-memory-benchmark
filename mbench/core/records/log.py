@@ -6,6 +6,10 @@ from types import MappingProxyType
 from mbench.core.records.ids import NodeId
 from mbench.core.values.protocol import ValueClass
 
+# The action type of a disclosure that re-states current values, stated by no
+# event and so named by the core rather than by a pack's ActionTypes.
+READ = "READ"
+
 
 def freeze[K, V](mapping: Mapping[K, V]) -> Mapping[K, V]:
     """A read-only copy, so later changes to the given map don't reach it."""

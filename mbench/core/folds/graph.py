@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from mbench.core.records.ids import NodeId
@@ -13,6 +13,7 @@ class EdgeKind(Enum):
 
     VALUE = "value"
     OCCURRED_IN = "occurredIn"
+    SAID_IN = "saidIn"
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,10 @@ class Graph:
     _value_nodes_by_pair: Mapping[Pair, frozenset[NodeId]] = field(
         default_factory=lambda: freeze({})
     )
+    # The later sessions that re-said each value node, for those that have any.
+    _said_in: Mapping[NodeId, frozenset[int]] = field(
+        default_factory=lambda: freeze({})
+    )
 
     def entity_nodes(self) -> frozenset[EntityNode]:
         """Every entity something was said about."""
@@ -75,15 +80,17 @@ class Graph:
         return frozenset(self._value_nodes.values())
 
     def session_nodes(self) -> frozenset[int]:
-        """The index of every session something entered the trace in."""
+        """The index of every session something entered or was re-said in."""
 
-        return frozenset(self._occurred_in.values())
+        return frozenset(self._occurred_in.values()).union(
+            *self._said_in.values()
+        )
 
     def update_chain(self, pair: Pair) -> tuple[ValueNode, ...]:
         """The pair's value nodes in session order, oldest first."""
 
         # Nodes of one session (a conflict's two halves) have no order of
-        # their own; the id only makes the chain the same on every run.
+        # their own, the id only makes the chain the same on every run.
         nodes = sorted(
             self._value_nodes_by_pair.get(pair, ()),
             key=lambda node: (self._occurred_in[node], node),
@@ -111,8 +118,13 @@ class Graph:
             if self._occurred_in[node] == last
         )
 
+    def mentions(self, node: NodeId) -> frozenset[int]:
+        """The later sessions that re-said the value node."""
+
+        return self._said_in.get(node, frozenset())
+
     def edges(self) -> frozenset[Edge]:
-        """Every edge: each value edge and each node's `occurredIn`."""
+        """Every edge: value edges, each node's `occurredIn`, each mention."""
 
         value_edges = {
             Edge(EdgeKind.VALUE, entity, node, relation)
@@ -123,14 +135,23 @@ class Graph:
             Edge(EdgeKind.OCCURRED_IN, node, session)
             for node, session in self._occurred_in.items()
         }
+        said_in = {
+            Edge(EdgeKind.SAID_IN, node, session)
+            for node, sessions in self._said_in.items()
+            for session in sessions
+        }
 
-        return frozenset(value_edges | occurred_in)
+        return frozenset(value_edges | occurred_in | said_in)
 
 
 def evolve_trace(
     graph: Graph, disclosure: Disclosure, pack: LoadedPack
 ) -> Graph:
-    """The graph after one disclosure."""
+    """The graph after one disclosure: a value node, a mention or nothing."""
+
+    restated = _restated(graph, disclosure)
+    if restated is not None:
+        return _mentioned(graph, restated, disclosure.session)
 
     entities = graph._entity_nodes
     if disclosure.entity not in entities:
@@ -149,13 +170,42 @@ def evolve_trace(
 
     # The graph's own entries come last: a node already in the trace keeps
     # the session it entered in, so only new nodes take this one.
-    return Graph(
+    return replace(
+        graph,
         _occurred_in=freeze({**occurred_in, **graph._occurred_in}),
         _entity_nodes=freeze(entities),
         _value_nodes=freeze({**graph._value_nodes, node.id: node}),
         _value_nodes_by_pair=freeze(
             {**graph._value_nodes_by_pair, pair: nodes | {node.id}}
         ),
+    )
+
+
+def _restated(graph: Graph, disclosure: Disclosure) -> ValueNode | None:
+    """The pair's latest value node that the disclosure re-says, if any."""
+
+    # Every write changes its pair's value, and every disclosure states the
+    # world, so a disclosure equal to the latest value can only re-say it.
+    latest = graph.latest((disclosure.entity, disclosure.relation))
+
+    return next(
+        (node for node in latest if node.value == disclosure.value), None
+    )
+
+
+def _mentioned(graph: Graph, node: ValueNode, session: int) -> Graph:
+    """The graph with the node re-said in the session, if that is later."""
+
+    # Re-said in its own session, the node is the second half of an agreeing
+    # double disclosure, or a READ beside the write: nothing new is said.
+    # In an earlier session the node did not yet exist to be re-said.
+    if session <= graph._occurred_in[node.id]:
+        return graph
+
+    said_in = graph._said_in.get(node.id, frozenset())
+
+    return replace(
+        graph, _said_in=freeze({**graph._said_in, node.id: said_in | {session}})
     )
 
 

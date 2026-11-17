@@ -3,8 +3,12 @@ from decimal import Decimal
 from types import MappingProxyType
 
 from mbench.core.folds.registry import fold_world
-from mbench.core.legality.predicate import Refusal, decide
-from mbench.core.records.commands import InitCommand, MutateCommand
+from mbench.core.legality.predicate import Command, Refusal, decide
+from mbench.core.records.commands import (
+    InitCommand,
+    MutateCommand,
+    ReadCommand,
+)
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import InitEvent, Record
 from mbench.core.values.protocol import ValueClass
@@ -45,18 +49,14 @@ class World:
         self.records: tuple[Record, ...] = ()
         self.allocator = IdAllocator(seed=0)
 
-    def decide(
-        self, command: InitCommand | MutateCommand
-    ) -> tuple[Record, ...] | Refusal:
+    def decide(self, command: Command) -> tuple[Record, ...] | Refusal:
         """Decide the command against the log so far, appending nothing."""
 
         registry = fold_world(self.records, self.pack)
 
         return decide(command, registry, self.pack, self.allocator)
 
-    def accept(
-        self, command: InitCommand | MutateCommand
-    ) -> tuple[Record, ...]:
+    def accept(self, command: Command) -> tuple[Record, ...]:
         """Decide the command against the log so far and append its records."""
 
         outcome = self.decide(command)
@@ -116,4 +116,15 @@ def move(referent: NodeId, session: int, action_type: str) -> MutateCommand:
         action_type=action_type,
         source="letter",
         referent=referent,
+    )
+
+
+def read(entity: NodeId, session: int) -> ReadCommand:
+    """A command in which the operator states the entity's current values."""
+
+    return ReadCommand(
+        session=session,
+        initiator="client",
+        source="operator",
+        entity=entity,
     )
