@@ -1,6 +1,4 @@
-from collections.abc import Mapping
 from decimal import Decimal
-from types import MappingProxyType
 
 import pytest
 
@@ -11,93 +9,19 @@ from mbench.core.folds.graph import (
     fold_trace,
 )
 from mbench.core.folds.registry import Stamped, fold_world
-from mbench.core.legality.predicate import Reason, Refusal, decide
+from mbench.core.legality.predicate import decide
 from mbench.core.records.commands import InitCommand, MutateCommand
-from mbench.core.records.ids import IdAllocator, NodeId
-from mbench.core.records.log import Disclosure, InitEvent, MutateEvent, Record
-from mbench.core.values.protocol import ValueClass
+from mbench.core.records.ids import NodeId
+from mbench.core.records.log import Disclosure, MutateEvent
+from tests.core.world import (
+    OPENED_IN,
+    WRITES,
+    World,
+    change_fee,
+    reprice,
+)
 from tests.testpack.pack import LOADED_PACK
-from tests.testpack.values import (
-    DepositKind,
-    InterestRate,
-    LastFour,
-    LifecycleStatus,
-    MonetaryAmount,
-    ProductName,
-)
-
-OPENED_IN = 1
-
-# Read-only, since every test shares it as the opening's writes.
-WRITES: Mapping[str, ValueClass] = MappingProxyType(
-    {
-        "kind": DepositKind("savings"),
-        "lastFour": LastFour("4471"),
-        "productName": ProductName("High Yield Savings"),
-        "hasInterestRate": InterestRate(Decimal("4.25")),
-        "hasMonthlyFee": MonetaryAmount(Decimal("5")),
-        "hasStatus": LifecycleStatus("active"),
-    }
-)
-
-
-class _World:
-    """A log built one accepted command at a time."""
-
-    def __init__(self) -> None:
-        """Start an empty log with its own allocator."""
-
-        self.records: tuple[Record, ...] = ()
-        self.allocator = IdAllocator(seed=0)
-
-    def accept(
-        self, command: InitCommand | MutateCommand
-    ) -> tuple[Record, ...]:
-        """Decide the command against the log so far and append its records."""
-
-        registry = fold_world(self.records, LOADED_PACK)
-        outcome = decide(command, registry, LOADED_PACK, self.allocator)
-        assert not isinstance(outcome, Refusal)
-
-        self.records += outcome
-        return outcome
-
-    def open(self) -> NodeId:
-        """Open a deposit account in the first session, and give its id."""
-
-        event, *_ = self.accept(
-            InitCommand(
-                session=OPENED_IN,
-                initiator="client",
-                action_type="OPEN_DEPOSIT_ACCOUNT",
-                source="customer",
-                writes=WRITES,
-            )
-        )
-        assert isinstance(event, InitEvent)
-        return event.new_id
-
-
-def _change_fee(referent: NodeId, session: int, amount: str) -> MutateCommand:
-    return MutateCommand(
-        session=session,
-        initiator="bank",
-        action_type="CHANGE_ACCOUNT_FEE",
-        source="letter",
-        referent=referent,
-        value=MonetaryAmount(Decimal(amount)),
-    )
-
-
-def _reprice(referent: NodeId, session: int, rate: str) -> MutateCommand:
-    return MutateCommand(
-        session=session,
-        initiator="bank",
-        action_type="REPRICE_DEPOSIT_ACCOUNT",
-        source="letter",
-        referent=referent,
-        value=InterestRate(Decimal(rate)),
-    )
+from tests.testpack.values import InterestRate, LastFour, MonetaryAmount
 
 
 def _session_of(graph: Graph, node: NodeId) -> int | str:
@@ -110,10 +34,10 @@ def _session_of(graph: Graph, node: NodeId) -> int | str:
 
 
 def test_a_mutate_gives_one_event_with_its_referent_and_one_value() -> None:
-    world = _World()
+    world = World()
     account = world.open()
 
-    event, *_ = world.accept(_reprice(account, 2, "3.90"))
+    event, *_ = world.accept(reprice(account, 2, "3.90"))
 
     assert event == MutateEvent(
         session=2,
@@ -125,11 +49,11 @@ def test_a_mutate_gives_one_event_with_its_referent_and_one_value() -> None:
 
 
 def test_a_mutate_discloses_its_one_value_framed_by_its_event() -> None:
-    world = _World()
+    world = World()
     account = world.open()
     used = {r.node_id for r in world.records if isinstance(r, Disclosure)}
 
-    _, *disclosures = world.accept(_change_fee(account, 2, "0"))
+    _, *disclosures = world.accept(change_fee(account, 2, "0"))
 
     (disclosure,) = disclosures
     assert isinstance(disclosure, Disclosure)
@@ -146,32 +70,10 @@ def test_a_mutate_discloses_its_one_value_framed_by_its_event() -> None:
     )
 
 
-def test_a_mutate_value_its_relation_does_not_hold_is_refused() -> None:
-    world = _World()
-    account = world.open()
-    command = MutateCommand(
-        session=2,
-        initiator="bank",
-        action_type="REPRICE_DEPOSIT_ACCOUNT",
-        source="letter",
-        referent=account,
-        value=MonetaryAmount(Decimal("3.90")),
-    )
-
-    outcome = decide(
-        command,
-        fold_world(world.records, LOADED_PACK),
-        LOADED_PACK,
-        world.allocator,
-    )
-
-    assert outcome == Refusal(clause=3, reason=Reason.INVALID_VALUE)
-
-
 def test_after_a_mutate_the_registry_holds_the_new_value_and_stamp() -> None:
-    world = _World()
+    world = World()
     account = world.open()
-    world.accept(_change_fee(account, 2, "0"))
+    world.accept(change_fee(account, 2, "0"))
 
     entry = fold_world(world.records, LOADED_PACK).entry(account)
 
@@ -187,20 +89,20 @@ def test_after_a_mutate_the_registry_holds_the_new_value_and_stamp() -> None:
 
 
 def test_a_mutate_leaves_other_entities_unchanged() -> None:
-    world = _World()
+    world = World()
     account = world.open()
     other = world.open()
     before = fold_world(world.records, LOADED_PACK).entry(other)
 
-    world.accept(_change_fee(account, 2, "0"))
+    world.accept(change_fee(account, 2, "0"))
 
     assert fold_world(world.records, LOADED_PACK).entry(other) == before
 
 
 def test_the_graph_gains_a_second_value_node_in_the_mutate_session() -> None:
-    world = _World()
+    world = World()
     account = world.open()
-    _, disclosure = world.accept(_change_fee(account, 2, "0"))
+    _, disclosure = world.accept(change_fee(account, 2, "0"))
     assert isinstance(disclosure, Disclosure)
 
     graph = fold_trace(world.records, LOADED_PACK)
@@ -214,9 +116,9 @@ def test_the_graph_gains_a_second_value_node_in_the_mutate_session() -> None:
 
 
 def test_the_entity_keeps_the_session_of_its_init() -> None:
-    world = _World()
+    world = World()
     account = world.open()
-    world.accept(_change_fee(account, 2, "0"))
+    world.accept(change_fee(account, 2, "0"))
 
     graph = fold_trace(world.records, LOADED_PACK)
 
@@ -224,10 +126,10 @@ def test_the_entity_keeps_the_session_of_its_init() -> None:
 
 
 def test_the_graph_answers_a_pairs_chain_versions_and_latest_node() -> None:
-    world = _World()
+    world = World()
     account = world.open()
-    world.accept(_reprice(account, 2, "3.90"))
-    world.accept(_reprice(account, 4, "3.50"))
+    world.accept(reprice(account, 2, "3.90"))
+    world.accept(reprice(account, 4, "3.50"))
 
     graph = fold_trace(world.records, LOADED_PACK)
     pair = (account, "hasInterestRate")
@@ -244,9 +146,9 @@ def test_the_graph_answers_a_pairs_chain_versions_and_latest_node() -> None:
 
 
 def test_a_mutate_leaves_another_relations_chain_at_one() -> None:
-    world = _World()
+    world = World()
     account = world.open()
-    world.accept(_reprice(account, 2, "3.90"))
+    world.accept(reprice(account, 2, "3.90"))
 
     graph = fold_trace(world.records, LOADED_PACK)
     pair = (account, "lastFour")
@@ -265,11 +167,11 @@ def test_a_pair_never_disclosed_has_an_empty_chain() -> None:
 
 
 def test_version_order_comes_from_sessions_not_from_record_order() -> None:
-    world = _World()
+    world = World()
     account = world.open()
     opening = world.records
-    second = world.accept(_reprice(account, 2, "3.90"))
-    third = world.accept(_reprice(account, 3, "3.50"))
+    second = world.accept(reprice(account, 2, "3.90"))
+    third = world.accept(reprice(account, 3, "3.50"))
 
     in_order = fold_trace(opening + second + third, LOADED_PACK)
     swapped = fold_trace(opening + third + second, LOADED_PACK)
@@ -286,10 +188,10 @@ def test_version_order_comes_from_sessions_not_from_record_order() -> None:
 
 
 def test_a_chain_returning_to_an_earlier_value_counts_every_write() -> None:
-    world = _World()
+    world = World()
     account = world.open()
-    world.accept(_change_fee(account, 2, "0"))
-    world.accept(_change_fee(account, 3, "5"))
+    world.accept(change_fee(account, 2, "0"))
+    world.accept(change_fee(account, 3, "5"))
 
     graph = fold_trace(world.records, LOADED_PACK)
     pair = (account, "hasMonthlyFee")
@@ -305,7 +207,7 @@ def test_a_chain_returning_to_an_earlier_value_counts_every_write() -> None:
 
 
 def test_a_command_naming_an_action_of_the_other_shape_raises() -> None:
-    world = _World()
+    world = World()
     account = world.open()
     registry = fold_world(world.records, LOADED_PACK)
     mutate_as_init = MutateCommand(
@@ -331,7 +233,7 @@ def test_a_command_naming_an_action_of_the_other_shape_raises() -> None:
 
 
 def test_only_an_entitys_first_disclosure_is_read_for_its_type() -> None:
-    world = _World()
+    world = World()
     account = world.open()
     restated = Disclosure(
         session=2,

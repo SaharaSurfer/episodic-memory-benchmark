@@ -2,7 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 
-from mbench.core.folds.registry import Registry
+from mbench.core.folds.registry import Registry, Stamped
 from mbench.core.records.commands import InitCommand, MutateCommand
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import (
@@ -19,7 +19,9 @@ from mbench.packs.spec import InitAction, LoadedPack, MutateAction
 class Reason(Enum):
     """Why a command was refused, a stable code the refusals are counted by."""
 
+    PAIR_ALREADY_WRITTEN = "pair_already_written"
     INVALID_VALUE = "invalid_value"
+    UNCHANGED_VALUE = "unchanged_value"
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,11 @@ def decide(
 
     writes = _writes(command, pack)
 
-    refusal = refuse_invalid_values(command, writes, pack)
+    refusal = (
+        refuse_second_write(command, writes, registry)
+        or refuse_invalid_values(command, writes, pack)
+        or refuse_unchanged_value(command, writes, registry)
+    )
     if refusal is not None:
         return refusal
 
@@ -51,6 +57,18 @@ def decide(
         return _init_records(command, allocator)
 
     return _mutate_records(command, writes, allocator)
+
+
+def refuse_second_write(
+    command: Command, writes: Mapping[str, ValueClass], registry: Registry
+) -> Refusal | None:
+    """Refuse a write to a pair already written in the command's session."""
+
+    for current in _current(command, writes, registry).values():
+        if current.session == command.session:
+            return Refusal(2, Reason.PAIR_ALREADY_WRITTEN)
+
+    return None
 
 
 def refuse_invalid_values(
@@ -67,6 +85,39 @@ def refuse_invalid_values(
             return Refusal(3, Reason.INVALID_VALUE)
 
     return None
+
+
+def refuse_unchanged_value(
+    command: Command, writes: Mapping[str, ValueClass], registry: Registry
+) -> Refusal | None:
+    """Refuse a write of the value its pair already holds."""
+
+    for relation, current in _current(command, writes, registry).items():
+        if writes[relation] == current.value:
+            return Refusal(8, Reason.UNCHANGED_VALUE)
+
+    return None
+
+
+def _current(
+    command: Command, writes: Mapping[str, ValueClass], registry: Registry
+) -> Mapping[str, Stamped]:
+    """The current stamped value of each pair the command writes, if any."""
+
+    # An INIT writes a new entity, whose pairs hold nothing yet. A referent
+    # the registry lacks is the referent clause's to refuse, not these.
+    if not isinstance(command, MutateCommand):
+        return {}
+
+    entry = registry.entry(command.referent)
+    if entry is None:
+        return {}
+
+    return {
+        relation: entry.values[relation]
+        for relation in writes
+        if relation in entry.values
+    }
 
 
 def _writes(command: Command, pack: LoadedPack) -> Mapping[str, ValueClass]:
