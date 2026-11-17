@@ -46,7 +46,7 @@ def _start_counter(world: World) -> NodeId:
     event, *_ = world.accept(
         InitCommand(
             session=1,
-            initiator="client",
+            initiator="CLIENT",
             action_type="START_COUNTER",
             source="customer",
             writes={"amount": MonetaryAmount(Decimal("1"))},
@@ -73,7 +73,7 @@ def test_a_status_move_is_a_mutate_writing_the_status_it_fixes(
 
     assert event == MutateEvent(
         session=2,
-        initiator="bank",
+        initiator="BANK",
         action_type=action_type,
         referent=account,
         writes={"hasStatus": status},
@@ -239,7 +239,7 @@ def test_an_entity_of_a_type_with_no_status_is_live() -> None:
     outcome = world.decide(
         MutateCommand(
             session=2,
-            initiator="client",
+            initiator="CLIENT",
             action_type="SET_COUNTER",
             source="customer",
             referent=counter,

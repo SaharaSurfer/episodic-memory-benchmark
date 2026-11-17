@@ -24,7 +24,7 @@ from tests.testpack.values import (
 def _event(session: int, new_id: str = "aaaaa") -> InitEvent:
     return InitEvent(
         session=session,
-        initiator="client",
+        initiator="CLIENT",
         action_type="OPEN_DEPOSIT_ACCOUNT",
         new_id=NodeId(new_id),
         writes={"lastFour": LastFour("4471")},
@@ -36,7 +36,7 @@ def _disclosure(session: int) -> Disclosure:
         session=session,
         source="customer",
         action_type="OPEN_DEPOSIT_ACCOUNT",
-        initiator="client",
+        initiator="CLIENT",
         entity=NodeId("aaaaa"),
         relation="lastFour",
         value=LastFour("4471"),
@@ -54,7 +54,7 @@ def test_a_record_field_cannot_be_reassigned() -> None:
 def _opened(writes: Mapping[str, ValueClass]) -> InitEvent:
     return InitEvent(
         session=1,
-        initiator="client",
+        initiator="CLIENT",
         action_type="OPEN_DEPOSIT_ACCOUNT",
         new_id=NodeId("aaaaa"),
         writes=writes,
@@ -64,7 +64,7 @@ def _opened(writes: Mapping[str, ValueClass]) -> InitEvent:
 def _fee_changed(writes: Mapping[str, ValueClass]) -> MutateEvent:
     return MutateEvent(
         session=2,
-        initiator="bank",
+        initiator="BANK",
         action_type="CHANGE_ACCOUNT_FEE",
         referent=NodeId("aaaaa"),
         writes=writes,

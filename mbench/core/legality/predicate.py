@@ -18,7 +18,13 @@ from mbench.core.records.log import (
     Record,
 )
 from mbench.core.values.protocol import ValueClass
-from mbench.packs.spec import Gate, InitAction, LoadedPack, MutateAction
+from mbench.packs.spec import (
+    Gate,
+    InitAction,
+    LoadedPack,
+    MutateAction,
+    SourceKind,
+)
 
 
 class Reason(Enum):
@@ -68,10 +74,31 @@ def decide(
     if refusal is not None:
         return refusal
 
+    source = default_source(command, pack)
     if isinstance(command, InitCommand):
-        return _init_records(command, allocator)
+        return _init_records(command, source, allocator)
 
-    return _mutate_records(command, writes, allocator)
+    return _mutate_records(command, writes, source, allocator)
+
+
+def default_source(command: EventCommand, pack: LoadedPack) -> str:
+    """The source named, else the initiator's speaker, else a document."""
+
+    if command.source is not None:
+        return command.source
+
+    for speaker in pack.speakers.values():
+        if speaker.represents == command.initiator:
+            return speaker.id
+
+    # Any document will do, the first declared keeps a replay stable.
+    for source in pack.sources.values():
+        if source.kind is SourceKind.DOCUMENT:
+            return source.id
+
+    # An off-stage actor in a pack with no document is the pack's bug, not a
+    # refusal a clause would count.
+    raise LookupError(f"no source can state an event of {command.initiator}")
 
 
 def refuse_unfit_referent(
@@ -235,7 +262,7 @@ def _passes(entry: Entry, gate: Gate) -> bool:
 
 
 def _init_records(
-    command: InitCommand, allocator: IdAllocator
+    command: InitCommand, source: str, allocator: IdAllocator
 ) -> tuple[Record, ...]:
     """The INIT event, then one default disclosure per value it writes."""
 
@@ -249,13 +276,14 @@ def _init_records(
 
     return (
         event,
-        *_disclosures(event, event.new_id, command.source, allocator),
+        *_disclosures(event, event.new_id, source, allocator),
     )
 
 
 def _mutate_records(
     command: MutateCommand,
     writes: Mapping[str, ValueClass],
+    source: str,
     allocator: IdAllocator,
 ) -> tuple[Record, ...]:
     """The MUTATE event, then the default disclosure of its one value."""
@@ -270,7 +298,7 @@ def _mutate_records(
 
     return (
         event,
-        *_disclosures(event, event.referent, command.source, allocator),
+        *_disclosures(event, event.referent, source, allocator),
     )
 
 

@@ -1,4 +1,13 @@
-from mbench.packs.spec import EntityType, InitAction, LoadedPack, MutateAction
+from mbench.packs.spec import (
+    Actor,
+    EntityType,
+    InitAction,
+    LoadedPack,
+    MutateAction,
+    Source,
+    SourceKind,
+    Speaker,
+)
 from tests.testpack.values import (
     DepositKind,
     InterestRate,
@@ -35,6 +44,24 @@ def _status_move(name: str, sources: set[str], target: str) -> MutateAction:
     )
 
 
+CLIENT = Actor("CLIENT")
+BANK = Actor("BANK")
+
+SPEAKERS = (
+    Speaker("customer", represents=CLIENT.name),
+    Speaker("operator", represents=BANK.name),
+)
+
+# The four documents tie, so a conflict is two of them, never a speaker.
+SOURCES = (
+    Source("customer", SourceKind.SPEAKER, authority=1),
+    Source("app_notification", SourceKind.DOCUMENT, authority=2),
+    Source("email", SourceKind.DOCUMENT, authority=2),
+    Source("letter", SourceKind.DOCUMENT, authority=2),
+    Source("statement", SourceKind.DOCUMENT, authority=2),
+    Source("operator", SourceKind.SPEAKER, authority=3),
+)
+
 LOADED_PACK = LoadedPack(
     entity_types={DEPOSIT_ACCOUNT.name: DEPOSIT_ACCOUNT},
     action_types={
@@ -62,4 +89,8 @@ LOADED_PACK = LoadedPack(
             )
         },
     },
+    actors={actor.name: actor for actor in (CLIENT, BANK)},
+    speakers={speaker.id: speaker for speaker in SPEAKERS},
+    sources={source.id: source for source in SOURCES},
+    owner=CLIENT.name,
 )

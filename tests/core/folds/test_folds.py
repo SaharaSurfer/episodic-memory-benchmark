@@ -11,7 +11,7 @@ def _opened(entity: str, node: str, value: ValueClass) -> tuple[Record, ...]:
     return (
         InitEvent(
             session=1,
-            initiator="client",
+            initiator="CLIENT",
             action_type="OPEN_DEPOSIT_ACCOUNT",
             new_id=NodeId(entity),
             writes={"lastFour": value},
@@ -20,7 +20,7 @@ def _opened(entity: str, node: str, value: ValueClass) -> tuple[Record, ...]:
             session=1,
             source="customer",
             action_type="OPEN_DEPOSIT_ACCOUNT",
-            initiator="client",
+            initiator="CLIENT",
             entity=NodeId(entity),
             relation="lastFour",
             value=value,

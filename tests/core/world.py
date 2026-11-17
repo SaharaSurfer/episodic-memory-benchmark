@@ -71,7 +71,7 @@ class World:
         event, *_ = self.accept(
             InitCommand(
                 session=OPENED_IN,
-                initiator="client",
+                initiator="CLIENT",
                 action_type="OPEN_DEPOSIT_ACCOUNT",
                 source="customer",
                 writes=WRITES,
@@ -86,7 +86,7 @@ def change_fee(referent: NodeId, session: int, amount: str) -> MutateCommand:
 
     return MutateCommand(
         session=session,
-        initiator="bank",
+        initiator="BANK",
         action_type="CHANGE_ACCOUNT_FEE",
         source="letter",
         referent=referent,
@@ -99,7 +99,7 @@ def reprice(referent: NodeId, session: int, rate: str) -> MutateCommand:
 
     return MutateCommand(
         session=session,
-        initiator="bank",
+        initiator="BANK",
         action_type="REPRICE_DEPOSIT_ACCOUNT",
         source="letter",
         referent=referent,
@@ -112,7 +112,7 @@ def move(referent: NodeId, session: int, action_type: str) -> MutateCommand:
 
     return MutateCommand(
         session=session,
-        initiator="bank",
+        initiator="BANK",
         action_type=action_type,
         source="letter",
         referent=referent,
@@ -124,7 +124,7 @@ def read(entity: NodeId, session: int) -> ReadCommand:
 
     return ReadCommand(
         session=session,
-        initiator="client",
+        initiator="CLIENT",
         source="operator",
         entity=entity,
     )

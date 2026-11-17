@@ -49,7 +49,7 @@ def test_a_mutate_gives_one_event_with_its_referent_and_one_value() -> None:
 
     assert event == MutateEvent(
         session=2,
-        initiator="bank",
+        initiator="BANK",
         action_type="REPRICE_DEPOSIT_ACCOUNT",
         referent=account,
         writes={"hasInterestRate": InterestRate(Decimal("3.90"))},
@@ -70,7 +70,7 @@ def test_a_mutate_discloses_its_one_value_framed_by_its_event() -> None:
         session=2,
         source="letter",
         action_type="CHANGE_ACCOUNT_FEE",
-        initiator="bank",
+        initiator="BANK",
         entity=account,
         relation="hasMonthlyFee",
         value=MonetaryAmount(Decimal("0")),
@@ -220,7 +220,7 @@ def test_a_command_naming_an_action_of_the_other_shape_raises() -> None:
     registry = fold_world(world.records, LOADED_PACK)
     mutate_as_init = MutateCommand(
         session=2,
-        initiator="bank",
+        initiator="BANK",
         action_type="OPEN_DEPOSIT_ACCOUNT",
         source="letter",
         referent=account,
@@ -228,7 +228,7 @@ def test_a_command_naming_an_action_of_the_other_shape_raises() -> None:
     )
     init_as_mutate = InitCommand(
         session=2,
-        initiator="client",
+        initiator="CLIENT",
         action_type="CHANGE_ACCOUNT_FEE",
         source="customer",
         writes=WRITES,
@@ -268,7 +268,7 @@ def test_only_an_entitys_first_disclosure_is_read_for_its_type() -> None:
         session=2,
         source="operator",
         action_type="NOT_A_PACK_ACTION",
-        initiator="client",
+        initiator="CLIENT",
         entity=account,
         relation="lastFour",
         # A value other than the current one, so the fold makes a node rather

@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from types import MappingProxyType
 
 from mbench.core.values.protocol import ValueClass
@@ -86,21 +87,77 @@ type ActionType = InitAction | MutateAction
 
 
 @dataclass(frozen=True)
+class Actor:
+    """A party that initiates events, on stage or off."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class Speaker:
+    """A party that talks, speaking for the actor it represents."""
+
+    id: str
+    represents: str
+
+
+class SourceKind(Enum):
+    """Whether a source is a speaker talking or a document quoted."""
+
+    SPEAKER = "speaker"
+    DOCUMENT = "document"
+
+
+@dataclass(frozen=True)
+class Source:
+    """Who a disclosure is attributed to: a speaker, or a document."""
+
+    id: str
+    # Declared, not derived from the speakers, so a speaker source left
+    # without its speaker is caught rather than read as a document.
+    kind: SourceKind
+    # Read only for ties: a conflict's two sources have equal authority.
+    authority: int
+
+
+@dataclass(frozen=True)
 class LoadedPack:
-    """What the core reads of a pack: its types and ActionTypes by name."""
+    """What the core reads of a pack: its types, ActionTypes and dialogue."""
 
     entity_types: Mapping[str, EntityType]
     action_types: Mapping[str, ActionType]
+    actors: Mapping[str, Actor]
+    speakers: Mapping[str, Speaker]
+    # In declaration order, which decides the document a default falls to.
+    sources: Mapping[str, Source]
+    # The actor whose world this is.
+    owner: str
 
     def __post_init__(self) -> None:
-        """Hold both tables read-only."""
+        """Hold every table read-only, and refuse unmatched speaker sources."""
 
-        object.__setattr__(
-            self, "entity_types", MappingProxyType(dict(self.entity_types))
-        )
-        object.__setattr__(
-            self, "action_types", MappingProxyType(dict(self.action_types))
-        )
+        for table in (
+            "entity_types",
+            "action_types",
+            "actors",
+            "speakers",
+            "sources",
+        ):
+            object.__setattr__(
+                self, table, MappingProxyType(dict(getattr(self, table)))
+            )
+
+        # A speaker's disclosures cite its source, so each needs the other.
+        speaking = {
+            id
+            for id, source in self.sources.items()
+            if source.kind is SourceKind.SPEAKER
+        }
+        unmatched = speaking ^ set(self.speakers)
+        if unmatched:
+            raise ValueError(
+                f"speakers and speaker sources differ: {sorted(unmatched)}"
+            )
 
     def action_for(
         self, entity_type: str, relation: str, transition: Transition

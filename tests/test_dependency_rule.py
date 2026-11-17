@@ -1,6 +1,8 @@
+import ast
 from pathlib import Path
 
 from tests.dependency_rule import ForbiddenImport, pack_imports_beyond_spec
+from tests.testpack.pack import LOADED_PACK
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "mbench"
 
@@ -97,3 +99,40 @@ def test_importing_pack_code_other_than_the_spec_is_reported(
         ForbiddenImport("mbench.core.legality", "mbench.packs.loader"),
         ForbiddenImport("mbench.core.legality", "mbench.packs.checks"),
     ]
+
+
+def _test_pack_names() -> set[str]:
+    pack = LOADED_PACK
+
+    return {
+        *pack.entity_types,
+        *(r for t in pack.entity_types.values() for r in t.relations),
+        *pack.action_types,
+        *pack.actors,
+        *pack.speakers,
+        *pack.sources,
+        pack.owner,
+    }
+
+
+def _pack_agnostic_modules() -> list[Path]:
+    # A concrete pack, a subpackage of packs, spells out its own names, no
+    # other module may know them.
+    return [
+        path
+        for path in sorted(PACKAGE_ROOT.rglob("*.py"))
+        if path.relative_to(PACKAGE_ROOT).parts[0] != "packs"
+        or len(path.relative_to(PACKAGE_ROOT).parts) == 2
+    ]
+
+
+def test_no_test_pack_name_is_written_outside_a_concrete_pack() -> None:
+    names = _test_pack_names()
+    written = [
+        (path.relative_to(PACKAGE_ROOT), node.value)
+        for path in _pack_agnostic_modules()
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Constant) and node.value in names
+    ]
+
+    assert written == []

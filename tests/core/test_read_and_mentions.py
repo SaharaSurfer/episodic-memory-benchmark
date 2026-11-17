@@ -51,14 +51,14 @@ def test_a_read_gives_one_disclosure_per_current_value_and_no_event() -> None:
 def test_a_read_is_framed_read_with_the_initiator_and_source_it_names() -> None:
     world = World()
     account = world.open()
-    command = replace(read(account, 3), initiator="bank", source="letter")
+    command = replace(read(account, 3), initiator="BANK", source="letter")
 
     disclosures = _disclosures(world.accept(command))
 
     assert {
         (d.session, d.source, d.action_type, d.initiator, d.entity)
         for d in disclosures
-    } == {(3, "letter", READ, "bank", account)}
+    } == {(3, "letter", READ, "BANK", account)}
 
 
 def test_every_read_disclosure_carries_a_fresh_node_id() -> None:
@@ -207,7 +207,7 @@ def _stating(entity: NodeId, rate: str) -> Disclosure:
         session=3,
         source="operator",
         action_type=READ,
-        initiator="client",
+        initiator="CLIENT",
         entity=entity,
         relation=RATE,
         value=InterestRate(Decimal(rate)),

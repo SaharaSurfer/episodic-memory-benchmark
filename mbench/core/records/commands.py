@@ -13,8 +13,9 @@ class InitCommand:
     session: int
     initiator: str
     action_type: str
-    source: str
     writes: Mapping[str, ValueClass]
+    # None leaves the source of its disclosures to the default.
+    source: str | None = None
 
     def __post_init__(self) -> None:
         """Hold the writes read-only."""
@@ -29,10 +30,11 @@ class MutateCommand:
     session: int
     initiator: str
     action_type: str
-    source: str
     referent: NodeId
     # None for a status action, which fixes the status it writes.
     value: ValueClass | None = None
+    # None leaves the source of its disclosure to the default.
+    source: str | None = None
 
 
 @dataclass(frozen=True)

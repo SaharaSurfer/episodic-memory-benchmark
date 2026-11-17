@@ -39,7 +39,7 @@ WRITES: Mapping[str, ValueClass] = MappingProxyType(
 def _open(writes: Mapping[str, ValueClass] = WRITES) -> InitCommand:
     return InitCommand(
         session=SESSION,
-        initiator="client",
+        initiator="CLIENT",
         action_type="OPEN_DEPOSIT_ACCOUNT",
         source="customer",
         writes=writes,
@@ -77,7 +77,7 @@ def test_the_init_event_carries_its_command_and_a_new_id() -> None:
     (event,), _ = _split(outcome)
     assert event == InitEvent(
         session=SESSION,
-        initiator="client",
+        initiator="CLIENT",
         action_type="OPEN_DEPOSIT_ACCOUNT",
         new_id=expected_id,
         writes=WRITES,
