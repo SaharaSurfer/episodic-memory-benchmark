@@ -1,0 +1,21 @@
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from mbench.core.records.log import freeze
+from mbench.core.values.protocol import ValueClass
+
+
+@dataclass(frozen=True)
+class InitCommand:
+    """A request to create an entity, its values already filled."""
+
+    session: int
+    initiator: str
+    action_type: str
+    source: str
+    writes: Mapping[str, ValueClass]
+
+    def __post_init__(self) -> None:
+        """Hold the writes read-only."""
+
+        object.__setattr__(self, "writes", freeze(self.writes))
