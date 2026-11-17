@@ -18,7 +18,22 @@ DEPOSIT_ACCOUNT = EntityType(
         "hasInterestRate": InterestRate,
         "hasMonthlyFee": MonetaryAmount,
     },
+    status="hasStatus",
+    terminal=frozenset({LifecycleStatus("closed")}),
 )
+
+
+def _status_move(name: str, sources: set[str], target: str) -> MutateAction:
+    """A deposit account's status action, gated on its source statuses."""
+
+    return MutateAction(
+        name,
+        referent_type=DEPOSIT_ACCOUNT.name,
+        relation="hasStatus",
+        gate={"hasStatus": frozenset(map(LifecycleStatus, sources))},
+        fixes=LifecycleStatus(target),
+    )
+
 
 LOADED_PACK = LoadedPack(
     entity_types={DEPOSIT_ACCOUNT.name: DEPOSIT_ACCOUNT},
@@ -36,5 +51,15 @@ LOADED_PACK = LoadedPack(
             referent_type=DEPOSIT_ACCOUNT.name,
             relation="hasMonthlyFee",
         ),
+        **{
+            action.name: action
+            for action in (
+                _status_move("FREEZE_DEPOSIT_ACCOUNT", {"active"}, "frozen"),
+                _status_move("UNFREEZE_DEPOSIT_ACCOUNT", {"frozen"}, "active"),
+                _status_move(
+                    "CLOSE_DEPOSIT_ACCOUNT", {"active", "frozen"}, "closed"
+                ),
+            )
+        },
     },
 )

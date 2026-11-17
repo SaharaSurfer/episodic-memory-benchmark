@@ -2,7 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 
-from mbench.core.folds.registry import Registry, Stamped
+from mbench.core.folds.registry import Entry, Registry, Stamped, is_live
 from mbench.core.records.commands import InitCommand, MutateCommand
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import (
@@ -13,12 +13,16 @@ from mbench.core.records.log import (
     Record,
 )
 from mbench.core.values.protocol import ValueClass
-from mbench.packs.spec import InitAction, LoadedPack, MutateAction
+from mbench.packs.spec import Gate, InitAction, LoadedPack, MutateAction
 
 
 class Reason(Enum):
     """Why a command was refused, a stable code the refusals are counted by."""
 
+    REFERENT_MISSING = "referent_missing"
+    REFERENT_WRONG_TYPE = "referent_wrong_type"
+    GATE_FAILED = "gate_failed"
+    NOT_LIVE = "not_live"
     PAIR_ALREADY_WRITTEN = "pair_already_written"
     INVALID_VALUE = "invalid_value"
     UNCHANGED_VALUE = "unchanged_value"
@@ -46,7 +50,8 @@ def decide(
     writes = _writes(command, pack)
 
     refusal = (
-        refuse_second_write(command, writes, registry)
+        refuse_unfit_referent(command, registry, pack)
+        or refuse_second_write(command, writes, registry)
         or refuse_invalid_values(command, writes, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
@@ -57,6 +62,36 @@ def decide(
         return _init_records(command, allocator)
 
     return _mutate_records(command, writes, allocator)
+
+
+def refuse_unfit_referent(
+    command: Command, registry: Registry, pack: LoadedPack
+) -> Refusal | None:
+    """Refuse a MUTATE on a missing, mistyped, gated-out or dead referent."""
+
+    # An INIT has no referent, its link endpoints have none to check yet.
+    if not isinstance(command, MutateCommand):
+        return None
+
+    action = pack.action_types[command.action_type]
+    entry = registry.entry(command.referent)
+
+    if entry is None:
+        return Refusal(1, Reason.REFERENT_MISSING)
+    if entry.type != action.referent_type:
+        return Refusal(1, Reason.REFERENT_WRONG_TYPE)
+
+    gate = action.gate if isinstance(action, MutateAction) else {}
+    if not _passes(entry, gate):
+        return Refusal(1, Reason.GATE_FAILED)
+
+    # A gate that reads the status has named the statuses it admits, a
+    # terminal one included, so it, not liveness, decides.
+    status = pack.entity_types[entry.type].status
+    if status not in gate and not is_live(entry, pack):
+        return Refusal(1, Reason.NOT_LIVE)
+
+    return None
 
 
 def refuse_second_write(
@@ -127,11 +162,33 @@ def _writes(command: Command, pack: LoadedPack) -> Mapping[str, ValueClass]:
     if isinstance(command, InitCommand) and isinstance(action, InitAction):
         return command.writes
     if isinstance(command, MutateCommand) and isinstance(action, MutateAction):
-        return {action.relation: command.value}
+        return {action.relation: _written_value(command, action)}
 
     # A command naming an ActionType of the other shape is a caller's bug,
     # raised like an unknown name, not a refusal a clause would count.
     raise TypeError(f"{type(command).__name__} cannot take {action.name}")
+
+
+def _written_value(command: MutateCommand, action: MutateAction) -> ValueClass:
+    """The value a MUTATE writes: its status action's, else the command's."""
+
+    if action.fixes is not None and command.value is None:
+        return action.fixes
+    if action.fixes is None and command.value is not None:
+        return command.value
+
+    # Like a command of the wrong shape: a status action's value is fixed, and
+    # any other MUTATE must name one.
+    raise TypeError(f"{action.name} needs a value iff it fixes none")
+
+
+def _passes(entry: Entry, gate: Gate) -> bool:
+    """Whether the entry holds an admitted value for every relation gated."""
+
+    return all(
+        relation in entry.values and entry.values[relation].value in admitted
+        for relation, admitted in gate.items()
+    )
 
 
 def _init_records(

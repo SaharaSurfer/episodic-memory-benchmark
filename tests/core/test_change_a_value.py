@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -18,10 +20,16 @@ from tests.core.world import (
     WRITES,
     World,
     change_fee,
+    move,
     reprice,
 )
 from tests.testpack.pack import LOADED_PACK
-from tests.testpack.values import InterestRate, LastFour, MonetaryAmount
+from tests.testpack.values import (
+    InterestRate,
+    LastFour,
+    LifecycleStatus,
+    MonetaryAmount,
+)
 
 
 def _session_of(graph: Graph, node: NodeId) -> int | str:
@@ -230,6 +238,27 @@ def test_a_command_naming_an_action_of_the_other_shape_raises() -> None:
         decide(mutate_as_init, registry, LOADED_PACK, world.allocator)
     with pytest.raises(TypeError):
         decide(init_as_mutate, registry, LOADED_PACK, world.allocator)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        lambda account: replace(
+            move(account, 2, "FREEZE_DEPOSIT_ACCOUNT"),
+            value=LifecycleStatus("closed"),
+        ),
+        lambda account: replace(reprice(account, 2, "3.90"), value=None),
+    ],
+    ids=["status move naming a value", "value mutate naming none"],
+)
+def test_a_mutate_naming_a_value_its_action_fixes_or_needs_raises(
+    command: Callable[[NodeId], MutateCommand],
+) -> None:
+    world = World()
+    account = world.open()
+
+    with pytest.raises(TypeError):
+        world.decide(command(account))
 
 
 def test_only_an_entitys_first_disclosure_is_read_for_its_type() -> None:

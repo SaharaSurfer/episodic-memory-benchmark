@@ -52,6 +52,16 @@ class Registry:
         return self._entries.get(entity)
 
 
+def is_live(entry: Entry, pack: LoadedPack) -> bool:
+    """Whether the entity's current status is not terminal for its type."""
+
+    entity_type = pack.entity_types[entry.type]
+    if entity_type.status is None:
+        return True
+
+    return entry.values[entity_type.status].value not in entity_type.terminal
+
+
 def evolve_world(
     registry: Registry, event: Event, pack: LoadedPack
 ) -> Registry:

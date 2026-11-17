@@ -8,6 +8,7 @@ from mbench.core.records.commands import InitCommand, MutateCommand
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import InitEvent, Record
 from mbench.core.values.protocol import ValueClass
+from mbench.packs.spec import LoadedPack
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
     DepositKind,
@@ -37,9 +38,10 @@ WRITES: Mapping[str, ValueClass] = MappingProxyType(
 class World:
     """A log built one accepted command at a time."""
 
-    def __init__(self) -> None:
-        """Start an empty log with its own allocator."""
+    def __init__(self, pack: LoadedPack = LOADED_PACK) -> None:
+        """Start an empty log over the pack, with its own allocator."""
 
+        self.pack = pack
         self.records: tuple[Record, ...] = ()
         self.allocator = IdAllocator(seed=0)
 
@@ -48,9 +50,9 @@ class World:
     ) -> tuple[Record, ...] | Refusal:
         """Decide the command against the log so far, appending nothing."""
 
-        registry = fold_world(self.records, LOADED_PACK)
+        registry = fold_world(self.records, self.pack)
 
-        return decide(command, registry, LOADED_PACK, self.allocator)
+        return decide(command, registry, self.pack, self.allocator)
 
     def accept(
         self, command: InitCommand | MutateCommand
@@ -102,4 +104,16 @@ def reprice(referent: NodeId, session: int, rate: str) -> MutateCommand:
         source="letter",
         referent=referent,
         value=InterestRate(Decimal(rate)),
+    )
+
+
+def move(referent: NodeId, session: int, action_type: str) -> MutateCommand:
+    """A command taking the account through a status move, naming no value."""
+
+    return MutateCommand(
+        session=session,
+        initiator="bank",
+        action_type=action_type,
+        source="letter",
+        referent=referent,
     )

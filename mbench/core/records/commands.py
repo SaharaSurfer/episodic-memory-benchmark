@@ -31,4 +31,5 @@ class MutateCommand:
     action_type: str
     source: str
     referent: NodeId
-    value: ValueClass
+    # None for a status action, which fixes the status it writes.
+    value: ValueClass | None = None
