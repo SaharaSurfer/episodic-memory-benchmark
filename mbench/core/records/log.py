@@ -30,6 +30,27 @@ class InitEvent:
 
 
 @dataclass(frozen=True)
+class MutateEvent:
+    """An event that writes one value of an existing entity."""
+
+    session: int
+    initiator: str
+    action_type: str
+    referent: NodeId
+    writes: Mapping[str, ValueClass]
+
+    def __post_init__(self) -> None:
+        """Hold the one write read-only, refusing any other number of them."""
+
+        if len(self.writes) != 1:
+            raise ValueError(
+                f"a MUTATE writes one value, not {len(self.writes)}"
+            )
+
+        object.__setattr__(self, "writes", freeze(self.writes))
+
+
+@dataclass(frozen=True)
 class Disclosure:
     """A source stating one value of one entity's relation in a session."""
 
@@ -43,7 +64,7 @@ class Disclosure:
     node_id: NodeId
 
 
-type Event = InitEvent
+type Event = InitEvent | MutateEvent
 type Record = Event | Disclosure
 
 

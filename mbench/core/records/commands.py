@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from mbench.core.records.ids import NodeId
 from mbench.core.records.log import freeze
 from mbench.core.values.protocol import ValueClass
 
@@ -19,3 +20,15 @@ class InitCommand:
         """Hold the writes read-only."""
 
         object.__setattr__(self, "writes", freeze(self.writes))
+
+
+@dataclass(frozen=True)
+class MutateCommand:
+    """A request to write one value, its ActionType names the relation."""
+
+    session: int
+    initiator: str
+    action_type: str
+    source: str
+    referent: NodeId
+    value: ValueClass

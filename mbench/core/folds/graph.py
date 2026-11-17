@@ -58,8 +58,9 @@ class Graph:
     _value_nodes: Mapping[NodeId, ValueNode] = field(
         default_factory=lambda: freeze({})
     )
-    # Each pair's value nodes, in the order they were written.
-    _chains: Mapping[Pair, tuple[NodeId, ...]] = field(
+    # Each pair's value nodes, unordered: version order is read from the
+    # sessions they occurred in, so storing an order could only contradict it.
+    _value_nodes_by_pair: Mapping[Pair, frozenset[NodeId]] = field(
         default_factory=lambda: freeze({})
     )
 
@@ -78,13 +79,45 @@ class Graph:
 
         return frozenset(self._occurred_in.values())
 
+    def update_chain(self, pair: Pair) -> tuple[ValueNode, ...]:
+        """The pair's value nodes in session order, oldest first."""
+
+        # Nodes of one session (a conflict's two halves) have no order of
+        # their own; the id only makes the chain the same on every run.
+        nodes = sorted(
+            self._value_nodes_by_pair.get(pair, ()),
+            key=lambda node: (self._occurred_in[node], node),
+        )
+
+        return tuple(self._value_nodes[node] for node in nodes)
+
+    def versions(self, pair: Pair) -> int:
+        """How many writes the pair has had, one value node each."""
+
+        return len(self._value_nodes_by_pair.get(pair, ()))
+
+    def latest(self, pair: Pair) -> frozenset[ValueNode]:
+        """The pair's value nodes of its latest session, two for a conflict."""
+
+        nodes = self._value_nodes_by_pair.get(pair, frozenset())
+        if not nodes:
+            return frozenset()
+
+        last = max(self._occurred_in[node] for node in nodes)
+
+        return frozenset(
+            self._value_nodes[node]
+            for node in nodes
+            if self._occurred_in[node] == last
+        )
+
     def edges(self) -> frozenset[Edge]:
         """Every edge: each value edge and each node's `occurredIn`."""
 
         value_edges = {
             Edge(EdgeKind.VALUE, entity, node, relation)
-            for (entity, relation), chain in self._chains.items()
-            for node in chain
+            for (entity, relation), nodes in self._value_nodes_by_pair.items()
+            for node in nodes
         }
         occurred_in = {
             Edge(EdgeKind.OCCURRED_IN, node, session)
@@ -99,12 +132,17 @@ def evolve_trace(
 ) -> Graph:
     """The graph after one disclosure."""
 
-    # A disclosure names no type, its ActionType knows the entity's.
-    entity_type = pack.action_types[disclosure.action_type].creates
-    entity = EntityNode(disclosure.entity, entity_type)
+    entities = graph._entity_nodes
+    if disclosure.entity not in entities:
+        # A disclosure names no type, its ActionType knows the entity's. Only
+        # an entity's first disclosure is read for it, since a later one may
+        # be framed by an action type the pack does not hold (a READ).
+        action = pack.action_types[disclosure.action_type]
+        entity = EntityNode(disclosure.entity, action.referent_type)
+        entities = {**entities, entity.id: entity}
 
     pair = (disclosure.entity, disclosure.relation)
-    chain = graph._chains.get(pair, ())
+    nodes = graph._value_nodes_by_pair.get(pair, frozenset())
     node = ValueNode(disclosure.node_id, disclosure.value)
     occurred_in = {disclosure.node_id: disclosure.session}
     occurred_in.setdefault(disclosure.entity, disclosure.session)
@@ -113,9 +151,11 @@ def evolve_trace(
     # the session it entered in, so only new nodes take this one.
     return Graph(
         _occurred_in=freeze({**occurred_in, **graph._occurred_in}),
-        _entity_nodes=freeze({entity.id: entity, **graph._entity_nodes}),
+        _entity_nodes=freeze(entities),
         _value_nodes=freeze({**graph._value_nodes, node.id: node}),
-        _chains=freeze({**graph._chains, pair: (*chain, node.id)}),
+        _value_nodes_by_pair=freeze(
+            {**graph._value_nodes_by_pair, pair: nodes | {node.id}}
+        ),
     )
 
 

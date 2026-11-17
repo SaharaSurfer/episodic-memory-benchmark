@@ -30,10 +30,22 @@ class EntityType:
 
 @dataclass(frozen=True)
 class InitAction:
-    """An ActionType that creates an entity of one type."""
+    """An ActionType that creates an entity of its referent type."""
 
     name: str
-    creates: str
+    referent_type: str
+
+
+@dataclass(frozen=True)
+class MutateAction:
+    """An ActionType that writes one relation of an entity of its type."""
+
+    name: str
+    referent_type: str
+    relation: str
+
+
+type ActionType = InitAction | MutateAction
 
 
 @dataclass(frozen=True)
@@ -41,7 +53,7 @@ class LoadedPack:
     """What the core reads of a pack: its types and ActionTypes by name."""
 
     entity_types: Mapping[str, EntityType]
-    action_types: Mapping[str, InitAction]
+    action_types: Mapping[str, ActionType]
 
     def __post_init__(self) -> None:
         """Hold both tables read-only."""

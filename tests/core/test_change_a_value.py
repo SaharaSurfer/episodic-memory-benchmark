@@ -1,0 +1,349 @@
+from collections.abc import Mapping
+from decimal import Decimal
+from types import MappingProxyType
+
+import pytest
+
+from mbench.core.folds.graph import (
+    EdgeKind,
+    Graph,
+    ValueNode,
+    fold_trace,
+)
+from mbench.core.folds.registry import Stamped, fold_world
+from mbench.core.legality.predicate import Reason, Refusal, decide
+from mbench.core.records.commands import InitCommand, MutateCommand
+from mbench.core.records.ids import IdAllocator, NodeId
+from mbench.core.records.log import Disclosure, InitEvent, MutateEvent, Record
+from mbench.core.values.protocol import ValueClass
+from tests.testpack.pack import LOADED_PACK
+from tests.testpack.values import (
+    DepositKind,
+    InterestRate,
+    LastFour,
+    LifecycleStatus,
+    MonetaryAmount,
+    ProductName,
+)
+
+OPENED_IN = 1
+
+# Read-only, since every test shares it as the opening's writes.
+WRITES: Mapping[str, ValueClass] = MappingProxyType(
+    {
+        "kind": DepositKind("savings"),
+        "lastFour": LastFour("4471"),
+        "productName": ProductName("High Yield Savings"),
+        "hasInterestRate": InterestRate(Decimal("4.25")),
+        "hasMonthlyFee": MonetaryAmount(Decimal("5")),
+        "hasStatus": LifecycleStatus("active"),
+    }
+)
+
+
+class _World:
+    """A log built one accepted command at a time."""
+
+    def __init__(self) -> None:
+        """Start an empty log with its own allocator."""
+
+        self.records: tuple[Record, ...] = ()
+        self.allocator = IdAllocator(seed=0)
+
+    def accept(
+        self, command: InitCommand | MutateCommand
+    ) -> tuple[Record, ...]:
+        """Decide the command against the log so far and append its records."""
+
+        registry = fold_world(self.records, LOADED_PACK)
+        outcome = decide(command, registry, LOADED_PACK, self.allocator)
+        assert not isinstance(outcome, Refusal)
+
+        self.records += outcome
+        return outcome
+
+    def open(self) -> NodeId:
+        """Open a deposit account in the first session, and give its id."""
+
+        event, *_ = self.accept(
+            InitCommand(
+                session=OPENED_IN,
+                initiator="client",
+                action_type="OPEN_DEPOSIT_ACCOUNT",
+                source="customer",
+                writes=WRITES,
+            )
+        )
+        assert isinstance(event, InitEvent)
+        return event.new_id
+
+
+def _change_fee(referent: NodeId, session: int, amount: str) -> MutateCommand:
+    return MutateCommand(
+        session=session,
+        initiator="bank",
+        action_type="CHANGE_ACCOUNT_FEE",
+        source="letter",
+        referent=referent,
+        value=MonetaryAmount(Decimal(amount)),
+    )
+
+
+def _reprice(referent: NodeId, session: int, rate: str) -> MutateCommand:
+    return MutateCommand(
+        session=session,
+        initiator="bank",
+        action_type="REPRICE_DEPOSIT_ACCOUNT",
+        source="letter",
+        referent=referent,
+        value=InterestRate(Decimal(rate)),
+    )
+
+
+def _session_of(graph: Graph, node: NodeId) -> int | str:
+    (session,) = {
+        edge.target
+        for edge in graph.edges()
+        if edge.kind is EdgeKind.OCCURRED_IN and edge.source == node
+    }
+    return session
+
+
+def test_a_mutate_gives_one_event_with_its_referent_and_one_value() -> None:
+    world = _World()
+    account = world.open()
+
+    event, *_ = world.accept(_reprice(account, 2, "3.90"))
+
+    assert event == MutateEvent(
+        session=2,
+        initiator="bank",
+        action_type="REPRICE_DEPOSIT_ACCOUNT",
+        referent=account,
+        writes={"hasInterestRate": InterestRate(Decimal("3.90"))},
+    )
+
+
+def test_a_mutate_discloses_its_one_value_framed_by_its_event() -> None:
+    world = _World()
+    account = world.open()
+    used = {r.node_id for r in world.records if isinstance(r, Disclosure)}
+
+    _, *disclosures = world.accept(_change_fee(account, 2, "0"))
+
+    (disclosure,) = disclosures
+    assert isinstance(disclosure, Disclosure)
+    assert disclosure.node_id not in used | {account}
+    assert disclosure == Disclosure(
+        session=2,
+        source="letter",
+        action_type="CHANGE_ACCOUNT_FEE",
+        initiator="bank",
+        entity=account,
+        relation="hasMonthlyFee",
+        value=MonetaryAmount(Decimal("0")),
+        node_id=disclosure.node_id,
+    )
+
+
+def test_a_mutate_value_its_relation_does_not_hold_is_refused() -> None:
+    world = _World()
+    account = world.open()
+    command = MutateCommand(
+        session=2,
+        initiator="bank",
+        action_type="REPRICE_DEPOSIT_ACCOUNT",
+        source="letter",
+        referent=account,
+        value=MonetaryAmount(Decimal("3.90")),
+    )
+
+    outcome = decide(
+        command,
+        fold_world(world.records, LOADED_PACK),
+        LOADED_PACK,
+        world.allocator,
+    )
+
+    assert outcome == Refusal(clause=3, reason=Reason.INVALID_VALUE)
+
+
+def test_after_a_mutate_the_registry_holds_the_new_value_and_stamp() -> None:
+    world = _World()
+    account = world.open()
+    world.accept(_change_fee(account, 2, "0"))
+
+    entry = fold_world(world.records, LOADED_PACK).entry(account)
+
+    assert entry is not None
+    assert entry.type == "DEPOSIT_ACCOUNT"
+    assert entry.values == {
+        **{
+            relation: Stamped(value, OPENED_IN)
+            for relation, value in WRITES.items()
+        },
+        "hasMonthlyFee": Stamped(MonetaryAmount(Decimal("0")), 2),
+    }
+
+
+def test_a_mutate_leaves_other_entities_unchanged() -> None:
+    world = _World()
+    account = world.open()
+    other = world.open()
+    before = fold_world(world.records, LOADED_PACK).entry(other)
+
+    world.accept(_change_fee(account, 2, "0"))
+
+    assert fold_world(world.records, LOADED_PACK).entry(other) == before
+
+
+def test_the_graph_gains_a_second_value_node_in_the_mutate_session() -> None:
+    world = _World()
+    account = world.open()
+    _, disclosure = world.accept(_change_fee(account, 2, "0"))
+    assert isinstance(disclosure, Disclosure)
+
+    graph = fold_trace(world.records, LOADED_PACK)
+
+    chain = graph.update_chain((account, "hasMonthlyFee"))
+    assert len(chain) == 2
+    assert chain[-1] == ValueNode(
+        disclosure.node_id, MonetaryAmount(Decimal("0"))
+    )
+    assert _session_of(graph, disclosure.node_id) == 2
+
+
+def test_the_entity_keeps_the_session_of_its_init() -> None:
+    world = _World()
+    account = world.open()
+    world.accept(_change_fee(account, 2, "0"))
+
+    graph = fold_trace(world.records, LOADED_PACK)
+
+    assert _session_of(graph, account) == OPENED_IN
+
+
+def test_the_graph_answers_a_pairs_chain_versions_and_latest_node() -> None:
+    world = _World()
+    account = world.open()
+    world.accept(_reprice(account, 2, "3.90"))
+    world.accept(_reprice(account, 4, "3.50"))
+
+    graph = fold_trace(world.records, LOADED_PACK)
+    pair = (account, "hasInterestRate")
+
+    chain = graph.update_chain(pair)
+    assert [node.value for node in chain] == [
+        InterestRate(Decimal("4.25")),
+        InterestRate(Decimal("3.90")),
+        InterestRate(Decimal("3.50")),
+    ]
+    assert [_session_of(graph, node.id) for node in chain] == [1, 2, 4]
+    assert graph.versions(pair) == 3
+    assert graph.latest(pair) == {chain[-1]}
+
+
+def test_a_mutate_leaves_another_relations_chain_at_one() -> None:
+    world = _World()
+    account = world.open()
+    world.accept(_reprice(account, 2, "3.90"))
+
+    graph = fold_trace(world.records, LOADED_PACK)
+    pair = (account, "lastFour")
+
+    assert graph.versions(pair) == 1
+    assert graph.latest(pair) == set(graph.update_chain(pair))
+
+
+def test_a_pair_never_disclosed_has_an_empty_chain() -> None:
+    graph = Graph()
+    pair = (NodeId("aaaaa"), "hasMonthlyFee")
+
+    assert graph.update_chain(pair) == ()
+    assert graph.versions(pair) == 0
+    assert graph.latest(pair) == frozenset()
+
+
+def test_version_order_comes_from_sessions_not_from_record_order() -> None:
+    world = _World()
+    account = world.open()
+    opening = world.records
+    second = world.accept(_reprice(account, 2, "3.90"))
+    third = world.accept(_reprice(account, 3, "3.50"))
+
+    in_order = fold_trace(opening + second + third, LOADED_PACK)
+    swapped = fold_trace(opening + third + second, LOADED_PACK)
+
+    assert swapped == in_order
+    assert [
+        node.value
+        for node in swapped.update_chain((account, "hasInterestRate"))
+    ] == [
+        InterestRate(Decimal("4.25")),
+        InterestRate(Decimal("3.90")),
+        InterestRate(Decimal("3.50")),
+    ]
+
+
+def test_a_chain_returning_to_an_earlier_value_counts_every_write() -> None:
+    world = _World()
+    account = world.open()
+    world.accept(_change_fee(account, 2, "0"))
+    world.accept(_change_fee(account, 3, "5"))
+
+    graph = fold_trace(world.records, LOADED_PACK)
+    pair = (account, "hasMonthlyFee")
+
+    chain = graph.update_chain(pair)
+    assert graph.versions(pair) == 3
+    assert [node.value for node in chain] == [
+        MonetaryAmount(Decimal("5")),
+        MonetaryAmount(Decimal("0")),
+        MonetaryAmount(Decimal("5")),
+    ]
+    assert graph.latest(pair) == {chain[-1]}
+
+
+def test_a_command_naming_an_action_of_the_other_shape_raises() -> None:
+    world = _World()
+    account = world.open()
+    registry = fold_world(world.records, LOADED_PACK)
+    mutate_as_init = MutateCommand(
+        session=2,
+        initiator="bank",
+        action_type="OPEN_DEPOSIT_ACCOUNT",
+        source="letter",
+        referent=account,
+        value=MonetaryAmount(Decimal("0")),
+    )
+    init_as_mutate = InitCommand(
+        session=2,
+        initiator="client",
+        action_type="CHANGE_ACCOUNT_FEE",
+        source="customer",
+        writes=WRITES,
+    )
+
+    with pytest.raises(TypeError):
+        decide(mutate_as_init, registry, LOADED_PACK, world.allocator)
+    with pytest.raises(TypeError):
+        decide(init_as_mutate, registry, LOADED_PACK, world.allocator)
+
+
+def test_only_an_entitys_first_disclosure_is_read_for_its_type() -> None:
+    world = _World()
+    account = world.open()
+    restated = Disclosure(
+        session=2,
+        source="operator",
+        action_type="NOT_A_PACK_ACTION",
+        initiator="client",
+        entity=account,
+        relation="lastFour",
+        value=LastFour("4471"),
+        node_id=NodeId("zzzzz"),
+    )
+
+    graph = fold_trace((*world.records, restated), LOADED_PACK)
+
+    assert {node.type for node in graph.entity_nodes()} == {"DEPOSIT_ACCOUNT"}
