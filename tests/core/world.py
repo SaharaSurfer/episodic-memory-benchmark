@@ -29,11 +29,17 @@ OPENING_RATE = "4.25"
 ISSUED_IN = 2
 CARD_LINK = "hasCorrespondingAccount"
 
+# Each account the world opens takes the next, so no two share an anchor. The
+# first is the one in WRITES, so an opening with WRITES as they are clashes
+# with the world's first account. Every two are far, so none is another's
+# lookalike either.
+LAST_FOURS = ("4471", "8203", "1658", "3926")
+
 # Read-only, since every test shares it as the opening's writes.
 WRITES: Mapping[str, ValueClass] = MappingProxyType(
     {
         "kind": DepositKind("savings"),
-        "lastFour": LastFour("4471"),
+        "lastFour": LastFour(LAST_FOURS[0]),
         "productName": ProductName("High Yield Savings"),
         "hasInterestRate": InterestRate(Decimal(OPENING_RATE)),
         "hasMonthlyFee": MonetaryAmount(Decimal("5")),
@@ -61,6 +67,7 @@ class World:
         self.pack = pack
         self.records: tuple[Record, ...] = ()
         self.allocator = IdAllocator(seed=0)
+        self.opened_count = 0
 
     def decide(self, command: Command) -> tuple[Record, ...] | Refusal:
         """Decide the command against the log so far, appending nothing."""
@@ -81,16 +88,15 @@ class World:
     def open(self) -> NodeId:
         """Open a deposit account in the first session, and give its id."""
 
-        event, *_ = self.accept(
-            InitCommand(
-                session=OPENED_IN,
-                initiator="CLIENT",
-                action_type="OPEN_DEPOSIT_ACCOUNT",
-                source="customer",
-                writes=WRITES,
-            )
+        assert self.opened_count < len(LAST_FOURS), (
+            "every last four is taken: add another to LAST_FOURS"
         )
+        last_four = LastFour(LAST_FOURS[self.opened_count])
+
+        event, *_ = self.accept(open_account(OPENED_IN, lastFour=last_four))
         assert isinstance(event, InitEvent)
+
+        self.opened_count += 1
         return event.new_id
 
     def issue_card(self, account: NodeId) -> NodeId:
@@ -99,6 +105,18 @@ class World:
         event, *_ = self.accept(issue(account, ISSUED_IN))
         assert isinstance(event, InitEvent)
         return event.new_id
+
+
+def open_account(session: int, **changes: ValueClass) -> InitCommand:
+    """A command opening an account with WRITES, some of them changed."""
+
+    return InitCommand(
+        session=session,
+        initiator="CLIENT",
+        action_type="OPEN_DEPOSIT_ACCOUNT",
+        source="customer",
+        writes={**WRITES, **changes},
+    )
 
 
 def issue(account: NodeId, session: int) -> InitCommand:

@@ -25,6 +25,14 @@ def _frozen_gates(gates: Mapping[str, Gate]) -> Mapping[str, Gate]:
     )
 
 
+def _has_zones(cls: type[ValueClass]) -> bool:
+    """Whether the class gives zones and a near generator."""
+
+    # Not `issubclass` with ZonedValueClass: a protocol with data members,
+    # as its class tag, cannot be checked against a class.
+    return all(callable(getattr(cls, name, None)) for name in ("zone", "near"))
+
+
 @dataclass(frozen=True)
 class Pool[V: ValueClass]:
     """A list of values of one class, samplers name it by its key."""
@@ -35,7 +43,7 @@ class Pool[V: ValueClass]:
 
 @dataclass(frozen=True)
 class EntityType:
-    """A type of entity, its relations' classes and its terminal statuses."""
+    """A type of entity: its relations, anchor and terminal statuses."""
 
     name: str
     relations: Mapping[str, type[ValueClass]]
@@ -47,9 +55,15 @@ class EntityType:
     links: Mapping[str, frozenset[str]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # The relations said to name an entity in words, no two entities of the
+    # type may hold them all in one same zone. Empty for a type never named.
+    anchor: tuple[str, ...] = ()
+    # Whether a question may name an entity of the type, apart from anchoring
+    # it: a type may be anchored so a hop can mention it, yet never named.
+    nameable: bool = False
 
     def __post_init__(self) -> None:
-        """Hold the relations and links read-only, the terminals as a set."""
+        """Hold the tables read-only, and refuse an anchor it cannot check."""
 
         object.__setattr__(
             self, "relations", MappingProxyType(dict(self.relations))
@@ -62,6 +76,25 @@ class EntityType:
                 {link: frozenset(types) for link, types in self.links.items()}
             ),
         )
+
+        strays = set(self.anchor) - self.relations.keys()
+        if strays:
+            raise ValueError(
+                f"{self.name} anchors on relations it lacks: {sorted(strays)}"
+            )
+
+        # A named entity's anchor must tell lookalikes from one entity, which
+        # takes zones. A type never named compares its anchor by equality.
+        unzoned = [
+            part
+            for part in self.anchor
+            if self.nameable and not _has_zones(self.relations[part])
+        ]
+        if unzoned:
+            raise ValueError(
+                f"{self.name} is nameable, but its anchor parts {unzoned}"
+                " have no zones"
+            )
 
 
 @dataclass(frozen=True)

@@ -49,6 +49,11 @@ class Registry:
 
         return frozenset(self._entries)
 
+    def entries(self) -> tuple[Entry, ...]:
+        """Every entity's entry, terminal ones included."""
+
+        return tuple(self._entries.values())
+
     def entry(self, entity: NodeId) -> Entry | None:
         """The entity's entry, or None if no such entity exists."""
 

@@ -18,7 +18,7 @@ from mbench.core.records.log import (
     MutateEvent,
     Record,
 )
-from mbench.core.values.protocol import ValueClass
+from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
     Gate,
     InitAction,
@@ -42,6 +42,7 @@ class Reason(Enum):
     PAIR_ALREADY_WRITTEN = "pair_already_written"
     INVALID_VALUE = "invalid_value"
     UNTRUE_DISCLOSURE = "untrue_disclosure"
+    ANCHOR_SAME_ZONE = "anchor_same_zone"
     UNCHANGED_VALUE = "unchanged_value"
 
 
@@ -76,6 +77,7 @@ def decide(
         or refuse_unfit_endpoints(command, registry, pack)
         or refuse_second_write(command, writes, registry)
         or refuse_invalid_values(command, writes, pack)
+        or refuse_anchor_same_zone(command, registry, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
     if refusal is not None:
@@ -205,6 +207,30 @@ def refuse_invalid_values(
     return None
 
 
+def refuse_anchor_same_zone(
+    command: EventCommand, registry: Registry, pack: LoadedPack
+) -> Refusal | None:
+    """Refuse an INIT whose anchor is in the same zone as one of its type's."""
+
+    if not isinstance(command, InitCommand):
+        return None
+
+    entity_type = pack.entity_types[_init_action(command, pack).referent_type]
+    if not entity_type.anchor:
+        return None
+
+    # Closed entities count too: a question may name one, so its anchor
+    # must still pick it out alone.
+    for entry in registry.entries():
+        if entry.type == entity_type.name and all(
+            _same_part(command.writes, entry, part)
+            for part in entity_type.anchor
+        ):
+            return Refusal(7, Reason.ANCHOR_SAME_ZONE)
+
+    return None
+
+
 def refuse_unchanged_value(
     command: EventCommand, writes: Mapping[str, ValueClass], registry: Registry
 ) -> Refusal | None:
@@ -233,6 +259,26 @@ def refuse_untrue_disclosure(
         holds = current is not None and admits(current.value, disclosure.value)
 
     return None if holds else Refusal(4, Reason.UNTRUE_DISCLOSURE)
+
+
+def _same_part(
+    writes: Mapping[str, ValueClass], entry: Entry, part: str
+) -> bool:
+    """Whether the INIT's anchor part is in the same zone as the entry's."""
+
+    # Nothing yet makes an INIT write every relation, and a part one side
+    # lacks cannot make the two anchors alike.
+    if part not in writes or part not in entry.values:
+        return False
+
+    new, existing = writes[part], entry.values[part].value
+
+    # The loaded type has refused a nameable anchor without zones, so a part
+    # without them belongs to a type never named, compared by equality.
+    if isinstance(new, ZonedValueClass) and isinstance(existing, type(new)):
+        return new.zone(existing) is Zone.SAME
+
+    return new == existing
 
 
 def admits(current: ValueClass, stated: ValueClass) -> bool:

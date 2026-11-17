@@ -30,6 +30,8 @@ DEPOSIT_ACCOUNT = EntityType(
     },
     status="hasStatus",
     terminal=frozenset({LifecycleStatus("closed")}),
+    anchor=("kind", "lastFour"),
+    nameable=True,
 )
 
 PAYMENT_CARD = EntityType(
@@ -42,6 +44,8 @@ PAYMENT_CARD = EntityType(
     status="hasStatus",
     terminal=frozenset({LifecycleStatus("closed")}),
     links={"hasCorrespondingAccount": frozenset({DEPOSIT_ACCOUNT.name})},
+    anchor=("cardType", "lastFour"),
+    nameable=True,
 )
 
 
