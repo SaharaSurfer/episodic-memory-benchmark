@@ -3,15 +3,16 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from mbench.core.records.ids import NodeId
-from mbench.core.records.log import Disclosure, Record, freeze
+from mbench.core.records.log import Disclosure, Link, Record, freeze
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import LoadedPack
 
 
 class EdgeKind(Enum):
-    """What an edge joins: an entity to a value node, or a node to a session."""
+    """What an edge joins: an entity to a value node or entity, or a session."""
 
     VALUE = "value"
+    STRUCTURAL = "structural"
     OCCURRED_IN = "occurredIn"
     SAID_IN = "saidIn"
 
@@ -34,7 +35,7 @@ class ValueNode:
 
 @dataclass(frozen=True)
 class Edge:
-    """An edge, a value edge is labelled with its relation."""
+    """An edge, a value or structural edge is labelled with its relation."""
 
     kind: EdgeKind
     source: NodeId
@@ -68,6 +69,8 @@ class Graph:
     _said_in: Mapping[NodeId, frozenset[int]] = field(
         default_factory=lambda: freeze({})
     )
+    # Each link disclosed, by its INIT only: a link is never re-said.
+    _links: Mapping[Pair, NodeId] = field(default_factory=lambda: freeze({}))
 
     def entity_nodes(self) -> frozenset[EntityNode]:
         """Every entity something was said about."""
@@ -124,12 +127,16 @@ class Graph:
         return self._said_in.get(node, frozenset())
 
     def edges(self) -> frozenset[Edge]:
-        """Every edge: value edges, each node's `occurredIn`, each mention."""
+        """Every edge: value, structural, each `occurredIn`, each mention."""
 
         value_edges = {
             Edge(EdgeKind.VALUE, entity, node, relation)
             for (entity, relation), nodes in self._value_nodes_by_pair.items()
             for node in nodes
+        }
+        structural = {
+            Edge(EdgeKind.STRUCTURAL, entity, target, relation)
+            for (entity, relation), target in self._links.items()
         }
         occurred_in = {
             Edge(EdgeKind.OCCURRED_IN, node, session)
@@ -141,43 +148,63 @@ class Graph:
             for session in sessions
         }
 
-        return frozenset(value_edges | occurred_in | said_in)
+        return frozenset(value_edges | structural | occurred_in | said_in)
 
 
 def evolve_trace(
     graph: Graph, disclosure: Disclosure, pack: LoadedPack
 ) -> Graph:
-    """The graph after one disclosure: a value node, a mention or nothing."""
+    """The graph after one disclosure: a node, an edge, a mention or nothing."""
+
+    pair = (disclosure.entity, disclosure.relation)
+    if isinstance(disclosure.value, Link):
+        # A link is disclosed once, by its INIT, so it never re-says one.
+        graph = _with_entity(graph, disclosure, pack)
+        return replace(
+            graph,
+            _links=freeze({**graph._links, pair: disclosure.value.target}),
+        )
 
     restated = _restated(graph, disclosure)
     if restated is not None:
         return _mentioned(graph, restated, disclosure.session)
 
-    entities = graph._entity_nodes
-    if disclosure.entity not in entities:
-        # A disclosure names no type, its ActionType knows the entity's. Only
-        # an entity's first disclosure is read for it, since a later one may
-        # be framed by an action type the pack does not hold (a READ).
-        action = pack.action_types[disclosure.action_type]
-        entity = EntityNode(disclosure.entity, action.referent_type)
-        entities = {**entities, entity.id: entity}
-
-    pair = (disclosure.entity, disclosure.relation)
+    graph = _with_entity(graph, disclosure, pack)
     nodes = graph._value_nodes_by_pair.get(pair, frozenset())
     node = ValueNode(disclosure.node_id, disclosure.value)
-    occurred_in = {disclosure.node_id: disclosure.session}
-    occurred_in.setdefault(disclosure.entity, disclosure.session)
 
-    # The graph's own entries come last: a node already in the trace keeps
-    # the session it entered in, so only new nodes take this one.
     return replace(
         graph,
-        _occurred_in=freeze({**occurred_in, **graph._occurred_in}),
-        _entity_nodes=freeze(entities),
+        _occurred_in=freeze(
+            {**graph._occurred_in, node.id: disclosure.session}
+        ),
         _value_nodes=freeze({**graph._value_nodes, node.id: node}),
         _value_nodes_by_pair=freeze(
             {**graph._value_nodes_by_pair, pair: nodes | {node.id}}
         ),
+    )
+
+
+def _with_entity(
+    graph: Graph, disclosure: Disclosure, pack: LoadedPack
+) -> Graph:
+    """The graph with the disclosure's entity node, entering in its session."""
+
+    if disclosure.entity in graph._entity_nodes:
+        return graph
+
+    # A disclosure names no type, its ActionType knows the entity's. Only an
+    # entity's first disclosure is read for it, since a later one may be
+    # framed by an action type the pack does not hold (a READ).
+    action = pack.action_types[disclosure.action_type]
+    entity = EntityNode(disclosure.entity, action.referent_type)
+
+    return replace(
+        graph,
+        _occurred_in=freeze(
+            {**graph._occurred_in, entity.id: disclosure.session}
+        ),
+        _entity_nodes=freeze({**graph._entity_nodes, entity.id: entity}),
     )
 
 

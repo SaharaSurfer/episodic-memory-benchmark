@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pytest
 
+from mbench.core.folds.graph import fold_trace
 from mbench.core.folds.registry import fold_world
 from mbench.core.legality.predicate import Reason, Refusal
 from mbench.core.records.commands import InitCommand, MutateCommand
@@ -17,9 +18,11 @@ from tests.testpack.values import LifecycleStatus, MonetaryAmount
 ACTIVE = LifecycleStatus("active")
 FROZEN = LifecycleStatus("frozen")
 CLOSED = LifecycleStatus("closed")
+INACTIVE = LifecycleStatus("inactive")
+LOCKED = LifecycleStatus("locked")
 
-# A type with no status and no banking name, so a referent of another type
-# can exist beside the deposit account before the test pack has a second one.
+# A type with no status and no banking name, so an entity of it is always live
+# and never the referent a deposit account's actions expect.
 COUNTER = EntityType("COUNTER", relations={"amount": MonetaryAmount})
 TWO_TYPES = replace(
     LOADED_PACK,
@@ -259,3 +262,63 @@ def test_the_referent_clause_comes_before_the_write_clauses() -> None:
     outcome = world.decide(move(account, 2, "FREEZE_DEPOSIT_ACCOUNT"))
 
     assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
+
+
+@pytest.mark.parametrize(
+    ("moves", "expected"),
+    [
+        (["ACTIVATE_CARD"], ACTIVE),
+        (["ACTIVATE_CARD", "LOCK_CARD"], LOCKED),
+        (["ACTIVATE_CARD", "LOCK_CARD", "UNLOCK_CARD"], ACTIVE),
+        (["CLOSE_CARD"], CLOSED),
+        (["ACTIVATE_CARD", "CLOSE_CARD"], CLOSED),
+        (["ACTIVATE_CARD", "LOCK_CARD", "CLOSE_CARD"], CLOSED),
+    ],
+    ids=[
+        "activate",
+        "lock",
+        "unlock",
+        "close from inactive",
+        "close from active",
+        "close from locked",
+    ],
+)
+def test_a_card_move_from_one_of_its_source_statuses_is_accepted(
+    moves: list[str], expected: LifecycleStatus
+) -> None:
+    world = World()
+    card = world.issue_card(world.open())
+
+    for session, action_type in enumerate(moves, start=3):
+        world.accept(move(card, session, action_type))
+
+    assert _status(world, card) == expected
+
+
+@pytest.mark.parametrize(
+    "action_type", ["LOCK_CARD", "UNLOCK_CARD"], ids=["lock", "unlock"]
+)
+def test_an_inactive_card_cannot_be_locked_or_unlocked(
+    action_type: str,
+) -> None:
+    world = World()
+    card = world.issue_card(world.open())
+
+    outcome = world.decide(move(card, 3, action_type))
+
+    assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
+
+
+def test_a_card_returning_to_active_has_a_status_node_per_write() -> None:
+    world = World()
+    card = world.issue_card(world.open())
+
+    for session, action_type in enumerate(
+        ["ACTIVATE_CARD", "LOCK_CARD", "UNLOCK_CARD"], start=3
+    ):
+        world.accept(move(card, session, action_type))
+
+    chain = fold_trace(world.records, world.pack).update_chain(
+        (card, "hasStatus")
+    )
+    assert [node.value for node in chain] == [INACTIVE, ACTIVE, LOCKED, ACTIVE]

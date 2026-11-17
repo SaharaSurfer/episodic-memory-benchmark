@@ -15,6 +15,7 @@ from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import LoadedPack
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
+    CardType,
     DepositKind,
     InterestRate,
     LastFour,
@@ -25,6 +26,8 @@ from tests.testpack.values import (
 
 OPENED_IN = 1
 OPENING_RATE = "4.25"
+ISSUED_IN = 2
+CARD_LINK = "hasCorrespondingAccount"
 
 # Read-only, since every test shares it as the opening's writes.
 WRITES: Mapping[str, ValueClass] = MappingProxyType(
@@ -35,6 +38,16 @@ WRITES: Mapping[str, ValueClass] = MappingProxyType(
         "hasInterestRate": InterestRate(Decimal(OPENING_RATE)),
         "hasMonthlyFee": MonetaryAmount(Decimal("5")),
         "hasStatus": LifecycleStatus("active"),
+    }
+)
+
+# Read-only for the same reason. The card type is written by hand here, though
+# the pack will derive it from the account.
+CARD_WRITES: Mapping[str, ValueClass] = MappingProxyType(
+    {
+        "cardType": CardType("debit"),
+        "lastFour": LastFour("9012"),
+        "hasStatus": LifecycleStatus("inactive"),
     }
 )
 
@@ -79,6 +92,26 @@ class World:
         )
         assert isinstance(event, InitEvent)
         return event.new_id
+
+    def issue_card(self, account: NodeId) -> NodeId:
+        """Issue a card on the account in the second session, give its id."""
+
+        event, *_ = self.accept(issue(account, ISSUED_IN))
+        assert isinstance(event, InitEvent)
+        return event.new_id
+
+
+def issue(account: NodeId, session: int) -> InitCommand:
+    """A command issuing a card on the account, filtering no endpoint."""
+
+    return InitCommand(
+        session=session,
+        initiator="BANK",
+        action_type="ISSUE_CARD",
+        source="operator",
+        writes=CARD_WRITES,
+        links={CARD_LINK: account},
+    )
 
 
 def change_fee(referent: NodeId, session: int, amount: str) -> MutateCommand:

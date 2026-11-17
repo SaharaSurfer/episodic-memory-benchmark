@@ -158,15 +158,14 @@ def _digit_lookalikes(digits: str) -> set[str]:
 
 
 @dataclass(frozen=True)
-class DepositKind(ZonedValueClass):
-    """Whether a deposit account is checking or savings."""
+class _Classification(ZonedValueClass):
+    """One member of a short list of kinds, none of which looks like another."""
 
-    tag: ClassVar[str] = "deposit_kind"
-    MEMBERS: ClassVar[frozenset[str]] = frozenset({"checking", "savings"})
+    MEMBERS: ClassVar[frozenset[str]]
     payload: str
 
     def is_valid(self) -> bool:
-        """One of the two kinds."""
+        """One of the listed kinds."""
 
         return self.payload in self.MEMBERS
 
@@ -184,6 +183,22 @@ class DepositKind(ZonedValueClass):
         """Nothing: the near zone is empty."""
 
         yield from ()
+
+
+@dataclass(frozen=True)
+class DepositKind(_Classification):
+    """Whether a deposit account is checking or savings."""
+
+    tag: ClassVar[str] = "deposit_kind"
+    MEMBERS: ClassVar[frozenset[str]] = frozenset({"checking", "savings"})
+
+
+@dataclass(frozen=True)
+class CardType(_Classification):
+    """Whether a payment card is a credit or a debit card."""
+
+    tag: ClassVar[str] = "card_type"
+    MEMBERS: ClassVar[frozenset[str]] = frozenset({"credit", "debit"})
 
 
 @dataclass(frozen=True)

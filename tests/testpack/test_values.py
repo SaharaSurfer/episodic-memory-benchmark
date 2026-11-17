@@ -5,6 +5,7 @@ import pytest
 
 from mbench.core.values.protocol import UniquenessScope
 from tests.testpack.values import (
+    CardType,
     DepositKind,
     InterestRate,
     LastFour,
@@ -90,6 +91,12 @@ CASES: list[ClassCase[Any]] = [
         valid=[DepositKind("checking"), DepositKind("savings")],
         invalid=[DepositKind("credit"), DepositKind("Checking")],
         far_pairs=[(DepositKind("checking"), DepositKind("savings"))],
+    ),
+    ClassCase(
+        CardType,
+        valid=[CardType("credit"), CardType("debit")],
+        invalid=[CardType("checking"), CardType("Debit")],
+        far_pairs=[(CardType("credit"), CardType("debit"))],
     ),
     ClassCase(
         ProductName,

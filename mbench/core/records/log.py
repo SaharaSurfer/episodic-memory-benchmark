@@ -18,19 +18,29 @@ def freeze[K, V](mapping: Mapping[K, V]) -> Mapping[K, V]:
 
 
 @dataclass(frozen=True)
+class Link:
+    """What a structural link's disclosure states: the entity it points at."""
+
+    target: NodeId
+
+
+@dataclass(frozen=True)
 class InitEvent:
-    """An event that creates an entity and writes its first values."""
+    """An event that creates an entity, writing its first values and links."""
 
     session: int
     initiator: str
     action_type: str
     new_id: NodeId
     writes: Mapping[str, ValueClass]
+    # The entity each structural link points at, written here and never again.
+    links: Mapping[str, NodeId] = field(default_factory=lambda: freeze({}))
 
     def __post_init__(self) -> None:
-        """Hold the writes read-only."""
+        """Hold the writes and links read-only."""
 
         object.__setattr__(self, "writes", freeze(self.writes))
+        object.__setattr__(self, "links", freeze(self.links))
 
 
 @dataclass(frozen=True)
@@ -64,7 +74,8 @@ class Disclosure:
     initiator: str
     entity: NodeId
     relation: str
-    value: ValueClass
+    value: ValueClass | Link
+    # Unused for a link, which makes an edge, not a value node.
     node_id: NodeId
 
 

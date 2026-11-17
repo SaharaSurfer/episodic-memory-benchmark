@@ -9,6 +9,7 @@ from mbench.packs.spec import (
     Speaker,
 )
 from tests.testpack.values import (
+    CardType,
     DepositKind,
     InterestRate,
     LastFour,
@@ -31,17 +32,50 @@ DEPOSIT_ACCOUNT = EntityType(
     terminal=frozenset({LifecycleStatus("closed")}),
 )
 
+PAYMENT_CARD = EntityType(
+    "PAYMENT_CARD",
+    relations={
+        "cardType": CardType,
+        "lastFour": LastFour,
+        "hasStatus": LifecycleStatus,
+    },
+    status="hasStatus",
+    terminal=frozenset({LifecycleStatus("closed")}),
+    links={"hasCorrespondingAccount": frozenset({DEPOSIT_ACCOUNT.name})},
+)
 
-def _status_move(name: str, sources: set[str], target: str) -> MutateAction:
-    """A deposit account's status action, gated on its source statuses."""
+
+def _status_move(
+    entity_type: EntityType, name: str, sources: set[str], target: str
+) -> MutateAction:
+    """A status action of the type, gated on its source statuses."""
 
     return MutateAction(
         name,
-        referent_type=DEPOSIT_ACCOUNT.name,
+        referent_type=entity_type.name,
         relation="hasStatus",
         gate={"hasStatus": frozenset(map(LifecycleStatus, sources))},
         fixes=LifecycleStatus(target),
     )
+
+
+STATUS_MOVES = (
+    _status_move(
+        DEPOSIT_ACCOUNT, "FREEZE_DEPOSIT_ACCOUNT", {"active"}, "frozen"
+    ),
+    _status_move(
+        DEPOSIT_ACCOUNT, "UNFREEZE_DEPOSIT_ACCOUNT", {"frozen"}, "active"
+    ),
+    _status_move(
+        DEPOSIT_ACCOUNT, "CLOSE_DEPOSIT_ACCOUNT", {"active", "frozen"}, "closed"
+    ),
+    _status_move(PAYMENT_CARD, "ACTIVATE_CARD", {"inactive"}, "active"),
+    _status_move(PAYMENT_CARD, "LOCK_CARD", {"active"}, "locked"),
+    _status_move(PAYMENT_CARD, "UNLOCK_CARD", {"locked"}, "active"),
+    _status_move(
+        PAYMENT_CARD, "CLOSE_CARD", {"inactive", "active", "locked"}, "closed"
+    ),
+)
 
 
 CLIENT = Actor("CLIENT")
@@ -63,10 +97,20 @@ SOURCES = (
 )
 
 LOADED_PACK = LoadedPack(
-    entity_types={DEPOSIT_ACCOUNT.name: DEPOSIT_ACCOUNT},
+    entity_types={
+        entity_type.name: entity_type
+        for entity_type in (DEPOSIT_ACCOUNT, PAYMENT_CARD)
+    },
     action_types={
         "OPEN_DEPOSIT_ACCOUNT": InitAction(
             "OPEN_DEPOSIT_ACCOUNT", referent_type=DEPOSIT_ACCOUNT.name
+        ),
+        # The account a card draws on can be any deposit account, so its
+        # endpoint has no gate.
+        "ISSUE_CARD": InitAction(
+            "ISSUE_CARD",
+            referent_type=PAYMENT_CARD.name,
+            links={"hasCorrespondingAccount": {}},
         ),
         "REPRICE_DEPOSIT_ACCOUNT": MutateAction(
             "REPRICE_DEPOSIT_ACCOUNT",
@@ -78,16 +122,7 @@ LOADED_PACK = LoadedPack(
             referent_type=DEPOSIT_ACCOUNT.name,
             relation="hasMonthlyFee",
         ),
-        **{
-            action.name: action
-            for action in (
-                _status_move("FREEZE_DEPOSIT_ACCOUNT", {"active"}, "frozen"),
-                _status_move("UNFREEZE_DEPOSIT_ACCOUNT", {"frozen"}, "active"),
-                _status_move(
-                    "CLOSE_DEPOSIT_ACCOUNT", {"active", "frozen"}, "closed"
-                ),
-            )
-        },
+        **{action.name: action for action in STATUS_MOVES},
     },
     actors={actor.name: actor for actor in (CLIENT, BANK)},
     speakers={speaker.id: speaker for speaker in SPEAKERS},

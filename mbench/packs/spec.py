@@ -9,6 +9,22 @@ type Gate = Mapping[str, frozenset[ValueClass]]
 type Transition = tuple[ValueClass, ValueClass]
 
 
+def _frozen_gate(gate: Gate) -> Gate:
+    """A read-only copy of the gate, each admitted set a frozen set."""
+
+    return MappingProxyType(
+        {relation: frozenset(admitted) for relation, admitted in gate.items()}
+    )
+
+
+def _frozen_gates(gates: Mapping[str, Gate]) -> Mapping[str, Gate]:
+    """A read-only copy of a gate per key, each gate frozen too."""
+
+    return MappingProxyType(
+        {key: _frozen_gate(gate) for key, gate in gates.items()}
+    )
+
+
 @dataclass(frozen=True)
 class Pool[V: ValueClass]:
     """A list of values of one class, samplers name it by its key."""
@@ -27,14 +43,25 @@ class EntityType:
     # live once it exists.
     status: str | None = None
     terminal: frozenset[ValueClass] = frozenset()
+    # Per link, the types it may point at: one target, set by the INIT.
+    links: Mapping[str, frozenset[str]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
-        """Hold the relations read-only, and the terminal statuses as a set."""
+        """Hold the relations and links read-only, the terminals as a set."""
 
         object.__setattr__(
             self, "relations", MappingProxyType(dict(self.relations))
         )
         object.__setattr__(self, "terminal", frozenset(self.terminal))
+        object.__setattr__(
+            self,
+            "links",
+            MappingProxyType(
+                {link: frozenset(types) for link, types in self.links.items()}
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -43,6 +70,15 @@ class InitAction:
 
     name: str
     referent_type: str
+    # The links the INIT writes, each with the gate its endpoint must pass.
+    links: Mapping[str, Gate] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    def __post_init__(self) -> None:
+        """Hold the links and their gates read-only."""
+
+        object.__setattr__(self, "links", _frozen_gates(self.links))
 
 
 @dataclass(frozen=True)
@@ -61,16 +97,7 @@ class MutateAction:
     def __post_init__(self) -> None:
         """Hold the gate read-only."""
 
-        object.__setattr__(
-            self,
-            "gate",
-            MappingProxyType(
-                {
-                    relation: frozenset(admitted)
-                    for relation, admitted in self.gate.items()
-                }
-            ),
-        )
+        object.__setattr__(self, "gate", _frozen_gate(self.gate))
 
     def takes(self, transition: Transition) -> bool:
         """Whether the action can make this change to the relation it writes."""

@@ -14,6 +14,7 @@ from mbench.core.records.log import (
     Disclosure,
     Event,
     InitEvent,
+    Link,
     MutateEvent,
     Record,
 )
@@ -34,6 +35,10 @@ class Reason(Enum):
     REFERENT_WRONG_TYPE = "referent_wrong_type"
     GATE_FAILED = "gate_failed"
     NOT_LIVE = "not_live"
+    ENDPOINT_MISSING = "endpoint_missing"
+    ENDPOINT_WRONG_TYPE = "endpoint_wrong_type"
+    ENDPOINT_GATE_FAILED = "endpoint_gate_failed"
+    ENDPOINT_FILTER_FAILED = "endpoint_filter_failed"
     PAIR_ALREADY_WRITTEN = "pair_already_written"
     INVALID_VALUE = "invalid_value"
     UNTRUE_DISCLOSURE = "untrue_disclosure"
@@ -64,9 +69,11 @@ def decide(
         return _decide_read(command, registry, allocator)
 
     writes = _writes(command, pack)
+    _check_links(command, pack)
 
     refusal = (
         refuse_unfit_referent(command, registry, pack)
+        or refuse_unfit_endpoints(command, registry, pack)
         or refuse_second_write(command, writes, registry)
         or refuse_invalid_values(command, writes, pack)
         or refuse_unchanged_value(command, writes, registry)
@@ -106,7 +113,7 @@ def refuse_unfit_referent(
 ) -> Refusal | None:
     """Refuse a MUTATE on a missing, mistyped, gated-out or dead referent."""
 
-    # An INIT has no referent, its link endpoints have none to check yet.
+    # An INIT has no referent, only link endpoints, checked on their own.
     if not isinstance(command, MutateCommand):
         return None
 
@@ -127,6 +134,34 @@ def refuse_unfit_referent(
     status = pack.entity_types[entry.type].status
     if status not in gate and not is_live(entry, pack):
         return Refusal(1, Reason.NOT_LIVE)
+
+    return None
+
+
+def refuse_unfit_endpoints(
+    command: EventCommand, registry: Registry, pack: LoadedPack
+) -> Refusal | None:
+    """Refuse an INIT whose link endpoint is unfit: missing, mistyped, gated."""
+
+    if not isinstance(command, InitCommand):
+        return None
+
+    action = _init_action(command, pack)
+    targets = pack.entity_types[action.referent_type].links
+
+    # An endpoint need not be live: a replacement points at the closed card
+    # it replaces. A gate or filter that wants a live one says so.
+    for link, endpoint in command.links.items():
+        entry = registry.entry(endpoint)
+
+        if entry is None:
+            return Refusal(1, Reason.ENDPOINT_MISSING)
+        if entry.type not in targets[link]:
+            return Refusal(1, Reason.ENDPOINT_WRONG_TYPE)
+        if not _passes(entry, action.links[link]):
+            return Refusal(1, Reason.ENDPOINT_GATE_FAILED)
+        if not _passes(entry, command.filters.get(link, {})):
+            return Refusal(1, Reason.ENDPOINT_FILTER_FAILED)
 
     return None
 
@@ -185,15 +220,19 @@ def refuse_unchanged_value(
 def refuse_untrue_disclosure(
     disclosure: Disclosure, registry: Registry
 ) -> Refusal | None:
-    """Refuse a disclosure of a value the world does not currently hold."""
+    """Refuse a disclosure of a value or link the world does not hold."""
 
     entry = registry.entry(disclosure.entity)
-    current = None if entry is None else entry.values.get(disclosure.relation)
-
-    if current is None or not admits(current.value, disclosure.value):
+    if entry is None:
         return Refusal(4, Reason.UNTRUE_DISCLOSURE)
 
-    return None
+    if isinstance(disclosure.value, Link):
+        holds = entry.links.get(disclosure.relation) == disclosure.value.target
+    else:
+        current = entry.values.get(disclosure.relation)
+        holds = current is not None and admits(current.value, disclosure.value)
+
+    return None if holds else Refusal(4, Reason.UNTRUE_DISCLOSURE)
 
 
 def admits(current: ValueClass, stated: ValueClass) -> bool:
@@ -239,6 +278,38 @@ def _writes(
     raise TypeError(f"{type(command).__name__} cannot take {action.name}")
 
 
+def _check_links(command: EventCommand, pack: LoadedPack) -> None:
+    """Raise unless an INIT names, and filters, only the links it writes."""
+
+    if not isinstance(command, InitCommand):
+        return
+
+    action = _init_action(command, pack)
+
+    # Like a command of the wrong shape: the caller fills every link the
+    # INIT writes, and a link it lacks or does not write is its bug.
+    if command.links.keys() != action.links.keys():
+        raise ValueError(
+            f"{action.name} writes links {sorted(action.links)},"
+            f" not {sorted(command.links)}"
+        )
+    if not command.filters.keys() <= action.links.keys():
+        raise ValueError(
+            f"{action.name} writes no link to filter among"
+            f" {sorted(command.filters.keys() - action.links.keys())}"
+        )
+
+
+def _init_action(command: InitCommand, pack: LoadedPack) -> InitAction:
+    """The INIT ActionType the command names, its shape already checked."""
+
+    action = pack.action_types[command.action_type]
+    # `_writes` has raised for an INIT command naming a MUTATE ActionType.
+    assert isinstance(action, InitAction)
+
+    return action
+
+
 def _written_value(command: MutateCommand, action: MutateAction) -> ValueClass:
     """The value a MUTATE writes: its status action's, else the command's."""
 
@@ -264,7 +335,7 @@ def _passes(entry: Entry, gate: Gate) -> bool:
 def _init_records(
     command: InitCommand, source: str, allocator: IdAllocator
 ) -> tuple[Record, ...]:
-    """The INIT event, then one default disclosure per value it writes."""
+    """The INIT event, then a default disclosure per value and link."""
 
     event = InitEvent(
         session=command.session,
@@ -272,11 +343,16 @@ def _init_records(
         action_type=command.action_type,
         new_id=allocator.allocate(),
         writes=command.writes,
+        links=command.links,
     )
+
+    links = {link: Link(target) for link, target in event.links.items()}
 
     return (
         event,
-        *_disclosures(event, event.new_id, source, allocator),
+        *_disclosures(
+            event, event.new_id, {**event.writes, **links}, source, allocator
+        ),
     )
 
 
@@ -298,14 +374,18 @@ def _mutate_records(
 
     return (
         event,
-        *_disclosures(event, event.referent, source, allocator),
+        *_disclosures(event, event.referent, event.writes, source, allocator),
     )
 
 
 def _disclosures(
-    event: Event, entity: NodeId, source: str, allocator: IdAllocator
+    event: Event,
+    entity: NodeId,
+    stated: Mapping[str, ValueClass | Link],
+    source: str,
+    allocator: IdAllocator,
 ) -> tuple[Disclosure, ...]:
-    """One disclosure per value the event writes, framed by the event."""
+    """One disclosure per value or link the event writes, framed by it."""
 
     return tuple(
         Disclosure(
@@ -318,7 +398,7 @@ def _disclosures(
             value=value,
             node_id=allocator.allocate(),
         )
-        for relation, value in event.writes.items()
+        for relation, value in stated.items()
     )
 
 

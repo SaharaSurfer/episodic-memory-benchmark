@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import (
@@ -23,16 +23,19 @@ class Stamped:
 
 @dataclass(frozen=True)
 class Entry:
-    """One entity as the world holds it now: type, id, current values."""
+    """One entity as the world holds it now: type, id, values and links."""
 
     type: str
     id: NodeId
     values: Mapping[str, Stamped]
+    # The entity each structural link points at, fixed since the INIT.
+    links: Mapping[str, NodeId] = field(default_factory=lambda: freeze({}))
 
     def __post_init__(self) -> None:
-        """Hold the values read-only."""
+        """Hold the values and links read-only."""
 
         object.__setattr__(self, "values", freeze(self.values))
+        object.__setattr__(self, "links", freeze(self.links))
 
 
 @dataclass(frozen=True)
@@ -80,13 +83,13 @@ def _created(event: InitEvent, pack: LoadedPack) -> Entry:
 
     entity_type = pack.action_types[event.action_type].referent_type
 
-    return Entry(entity_type, event.new_id, _stamped(event))
+    return Entry(entity_type, event.new_id, _stamped(event), event.links)
 
 
 def _mutated(entry: Entry, event: MutateEvent) -> Entry:
     """The entry with the MUTATE's value written and stamped."""
 
-    return Entry(entry.type, entry.id, {**entry.values, **_stamped(event)})
+    return replace(entry, values={**entry.values, **_stamped(event)})
 
 
 def _stamped(event: Event) -> dict[str, Stamped]:
