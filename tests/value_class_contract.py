@@ -1,9 +1,16 @@
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from itertools import combinations
+from typing import cast
 
-from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
+from mbench.core.values.protocol import (
+    DecimalValueClass,
+    ValueClass,
+    Zone,
+    ZonedValueClass,
+)
 
 
 @dataclass(frozen=True)
@@ -123,6 +130,20 @@ def near_generator_yields_only_near_values(
         )
 
 
+def decimal_values_rebuild_from_their_payload(
+    case: ClassCase[ValueClass],
+) -> None:
+    """A value built from its own payload is the same value."""
+
+    # Ranges and steps read a value's payload and build values from
+    # decimals, so the two must be one number in one unit.
+    for value in map(_decimal_valued, case.valid):
+        rebuilt = type(value)(value.payload)
+        assert rebuilt == value, (
+            f"not rebuilt from its payload: {value} became {rebuilt}"
+        )
+
+
 VALUE_CHECKS: list[ContractCheck] = [
     valid_values_are_accepted,
     invalid_values_are_refused,
@@ -133,18 +154,25 @@ ZONE_CHECKS: list[ContractCheck] = [
     zones_match_the_examples,
     near_generator_yields_only_near_values,
 ]
+DECIMAL_CHECKS: list[ContractCheck] = [
+    decimal_values_rebuild_from_their_payload,
+]
 CONTRACT_CHECKS: list[ContractCheck] = VALUE_CHECKS + ZONE_CHECKS
 
 
 def checks_for(case: ClassCase[ValueClass]) -> list[ContractCheck]:
-    """The checks that apply: zone checks need zones or zone examples."""
+    """The checks that apply to the case's class."""
 
     zoned = any(isinstance(v, ZonedValueClass) for v in case.examples())
-    return (
-        CONTRACT_CHECKS
-        if zoned or case.near_pairs or case.far_pairs
-        else VALUE_CHECKS
-    )
+    decimal = bool(case.valid) and all(map(_holds_decimal, case.valid))
+
+    checks = list(VALUE_CHECKS)
+    if zoned or case.near_pairs or case.far_pairs:
+        checks += ZONE_CHECKS
+    if decimal:
+        checks += DECIMAL_CHECKS
+
+    return checks
 
 
 def duplicate_tags(classes: Iterable[type[ValueClass]]) -> list[str]:
@@ -166,3 +194,18 @@ def _zoned(value: ValueClass) -> ZonedValueClass:
 
     assert isinstance(value, ZonedValueClass), f"has no zones: {value}"
     return value
+
+
+def _holds_decimal(value: ValueClass) -> bool:
+    """Whether the value exposes a decimal payload."""
+
+    return isinstance(value, DecimalValueClass) and isinstance(
+        value.payload, Decimal
+    )
+
+
+def _decimal_valued(value: ValueClass) -> DecimalValueClass:
+    """The value as one with a decimal payload, failing if it has none."""
+
+    assert _holds_decimal(value), f"has no decimal payload: {value}"
+    return cast(DecimalValueClass, value)

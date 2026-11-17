@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any, ClassVar, Self
 
 import pytest
@@ -10,6 +11,7 @@ from tests.value_class_contract import (
     VALUE_CHECKS,
     ClassCase,
     checks_for,
+    decimal_values_rebuild_from_their_payload,
     distinct_values_render_differently,
     duplicate_tags,
     equality_is_canonical,
@@ -336,3 +338,76 @@ def test_two_classes_sharing_a_tag_are_reported() -> None:
 
 def test_classes_with_their_own_tags_are_not_reported() -> None:
     assert duplicate_tags([Digit, RendersParity, AcceptsAnything]) == []
+
+
+@dataclass(frozen=True)
+class Dollars(ValueClass):
+    """Whole and part dollars, as a decimal."""
+
+    tag: ClassVar[str] = "dollars"
+    payload: Decimal
+
+    def is_valid(self) -> bool:
+        """Never negative."""
+
+        return self.payload >= 0
+
+    def render(self) -> str:
+        """As written."""
+
+        return f"${self.payload}"
+
+
+@dataclass(frozen=True)
+class PayloadInCents(ValueClass):
+    """Built from dollars, but reports its payload in cents."""
+
+    tag: ClassVar[str] = "payload_in_cents"
+    dollars: Decimal
+
+    @property
+    def payload(self) -> Decimal:
+        """The amount in cents, not the dollars it was built from."""
+
+        return self.dollars * 100
+
+    def is_valid(self) -> bool:
+        """Never negative."""
+
+        return self.dollars >= 0
+
+    def render(self) -> str:
+        """As written."""
+
+        return f"${self.dollars}"
+
+
+def _decimal_case(cls: Any) -> ClassCase[Any]:
+    return ClassCase(
+        cls,
+        valid=[cls(Decimal("0")), cls(Decimal("1.50"))],
+        invalid=[cls(Decimal("-1"))],
+    )
+
+
+def test_a_decimal_class_rebuilt_from_its_payload_passes() -> None:
+    decimal_values_rebuild_from_their_payload(_decimal_case(Dollars))
+
+
+def test_a_decimal_class_whose_payload_does_not_rebuild_it_fails() -> None:
+    with pytest.raises(AssertionError, match="not rebuilt from its payload"):
+        decimal_values_rebuild_from_their_payload(_decimal_case(PayloadInCents))
+
+
+def test_the_rebuild_check_on_a_class_without_a_decimal_payload_fails() -> None:
+    with pytest.raises(AssertionError, match="has no decimal payload"):
+        decimal_values_rebuild_from_their_payload(_case(Digit))
+
+
+def test_the_rebuild_check_applies_to_classes_with_decimal_payloads() -> None:
+    assert decimal_values_rebuild_from_their_payload in checks_for(
+        _decimal_case(Dollars)
+    )
+    assert decimal_values_rebuild_from_their_payload not in checks_for(
+        _case(Digit)
+    )

@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from decimal import Decimal
 from enum import Enum
 from typing import ClassVar, Protocol, Self, runtime_checkable
 
@@ -53,4 +54,18 @@ class ZonedValueClass(ValueClass, Protocol):
 
     def near(self) -> Iterator[Self]:
         """Every valid value in this value's near zone, never itself."""
+        ...
+
+
+@runtime_checkable
+class DecimalValueClass(ValueClass, Protocol):
+    """A value class built from a decimal payload."""
+
+    def __init__(self, payload: Decimal) -> None:
+        """Build the value, which stores the payload in canonical form."""
+        ...
+
+    @property
+    def payload(self) -> Decimal:
+        """The decimal the value holds, as the constructor would take it."""
         ...
