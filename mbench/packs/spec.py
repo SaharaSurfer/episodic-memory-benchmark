@@ -2,8 +2,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
+from typing import Any
 
 from mbench.core.values.protocol import ValueClass
+from mbench.core.values.samplers import Sampler
 
 type Gate = Mapping[str, frozenset[ValueClass]]
 type Transition = tuple[ValueClass, ValueClass]
@@ -107,11 +109,17 @@ class InitAction:
     links: Mapping[str, Gate] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # The values the INIT itself sets, never chosen per command. Its entry
+    # status is one: for variety a pack adds another INIT.
+    fixes: Mapping[str, ValueClass] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
-        """Hold the links and their gates read-only."""
+        """Hold the links, their gates and the fixed values read-only."""
 
         object.__setattr__(self, "links", _frozen_gates(self.links))
+        object.__setattr__(self, "fixes", MappingProxyType(dict(self.fixes)))
 
 
 @dataclass(frozen=True)
@@ -238,6 +246,18 @@ class LoadedPack:
     derivation_reads: Mapping[str, frozenset[str]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    pools: Mapping[str, Pool[Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    # First values per (INIT, relation). An INIT's run in this order, so one
+    # may read the relations declared before it.
+    init_samplers: Mapping[tuple[str, str], Sampler[Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    # Next values per (entity type, relation).
+    step_samplers: Mapping[tuple[str, str], Sampler[Any]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
         """Hold every table read-only, and refuse names that do not match."""
@@ -251,6 +271,9 @@ class LoadedPack:
             "role_filters",
             "framings",
             "derivation_reads",
+            "pools",
+            "init_samplers",
+            "step_samplers",
         ):
             object.__setattr__(
                 self, table, MappingProxyType(dict(getattr(self, table)))
@@ -280,6 +303,27 @@ class LoadedPack:
         )
         if unknown:
             raise ValueError(f"framings name undeclared {sorted(unknown)}")
+
+        # Every later status check reads the status an INIT starts it at.
+        unfixed = [
+            action.name
+            for action in self.action_types.values()
+            if isinstance(action, InitAction)
+            and not self._fixes_entry_status(action)
+        ]
+        if unfixed:
+            raise ValueError(f"INITs fix no entry status: {sorted(unfixed)}")
+
+    def _fixes_entry_status(self, action: InitAction) -> bool:
+        """Whether the INIT fixes its type's status, if the type has one."""
+
+        entity_type = self.entity_types.get(action.referent_type)
+
+        return (
+            entity_type is None
+            or entity_type.status is None
+            or entity_type.status in action.fixes
+        )
 
     def action_for(
         self, entity_type: str, relation: str, transition: Transition

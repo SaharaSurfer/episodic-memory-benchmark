@@ -102,6 +102,7 @@ def check(
 
     writes = _world_writes(command, pack)
     _check_links(command, pack)
+    _check_fixed_values(command, pack)
     _check_sources(command, pack)
 
     return (
@@ -637,6 +638,27 @@ def _check_links(command: EventCommand, pack: LoadedPack) -> None:
         raise ValueError(
             f"{action.name} names role filters the pack lacks:"
             f" {sorted(unknown)}"
+        )
+
+
+def _check_fixed_values(command: EventCommand, pack: LoadedPack) -> None:
+    """Raise unless an INIT writes exactly the values its ActionType fixes."""
+
+    if not isinstance(command, InitCommand):
+        return
+
+    action = _init_action(command, pack)
+
+    # The pack fixes these, so a command that gets one wrong is its caller's
+    # bug. Left unwritten, a status would break every later read of it.
+    wrong = [
+        relation
+        for relation, value in action.fixes.items()
+        if command.writes.get(relation) != value
+    ]
+    if wrong:
+        raise ValueError(
+            f"{action.name} fixes {sorted(wrong)}, the command differs"
         )
 
 

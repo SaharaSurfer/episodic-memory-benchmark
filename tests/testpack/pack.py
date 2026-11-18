@@ -11,7 +11,12 @@ from mbench.packs.spec import (
     SourceKind,
     Speaker,
 )
+from tests.testpack.pools import POOLS
+from tests.testpack.samplers import INIT_SAMPLERS, STEP_SAMPLERS
 from tests.testpack.values import (
+    ACTIVE,
+    INACTIVE,
+    OPEN,
     CardType,
     CaseKind,
     DepositKind,
@@ -196,7 +201,9 @@ LOADED_PACK = LoadedPack(
     },
     action_types={
         "OPEN_DEPOSIT_ACCOUNT": InitAction(
-            "OPEN_DEPOSIT_ACCOUNT", referent_type=DEPOSIT_ACCOUNT.name
+            "OPEN_DEPOSIT_ACCOUNT",
+            referent_type=DEPOSIT_ACCOUNT.name,
+            fixes={"hasStatus": ACTIVE},
         ),
         # The account a card draws on can be any deposit account, so its
         # endpoint has no gate.
@@ -204,17 +211,20 @@ LOADED_PACK = LoadedPack(
             "ISSUE_CARD",
             referent_type=PAYMENT_CARD.name,
             links={"hasCorrespondingAccount": {}},
+            fixes={"hasStatus": INACTIVE},
         ),
         # What a case is about is the role filter's to narrow, if any.
         "REPORT_FRAUD": InitAction(
             "REPORT_FRAUD",
             referent_type=SERVICE_CASE.name,
             links={"isAbout": {}},
+            fixes={"kind": CaseKind("fraud_report"), "hasStatus": OPEN},
         ),
         "REQUEST_CARD": InitAction(
             "REQUEST_CARD",
             referent_type=SERVICE_CASE.name,
             links={"isAbout": {}},
+            fixes={"kind": CaseKind("card_request"), "hasStatus": OPEN},
         ),
         "REPRICE_DEPOSIT_ACCOUNT": MutateAction(
             "REPRICE_DEPOSIT_ACCOUNT",
@@ -236,4 +246,7 @@ LOADED_PACK = LoadedPack(
         role_filter.name: role_filter for role_filter in ROLE_FILTERS
     },
     framings=FRAMINGS,
+    pools=POOLS,
+    init_samplers=INIT_SAMPLERS,
+    step_samplers=STEP_SAMPLERS,
 )

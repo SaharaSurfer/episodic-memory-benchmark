@@ -30,7 +30,7 @@ from tests.core.world import (
     World,
     issue,
     move,
-    report_fraud,
+    request_card,
 )
 from tests.testpack.pack import (
     CARD_ELIGIBLE_ACCOUNT,
@@ -44,7 +44,7 @@ from tests.testpack.pack import (
 )
 from tests.testpack.values import (
     ACTIVE,
-    CaseKind,
+    INACTIVE,
     DepositKind,
     LastFour,
     MonetaryAmount,
@@ -69,7 +69,10 @@ def second_card(account: NodeId, session: int, name: str) -> InitCommand:
 
 def _with_endpoint_gate(gate: Gate) -> World:
     action = InitAction(
-        "ISSUE_CARD", referent_type=PAYMENT_CARD.name, links={CARD_LINK: gate}
+        "ISSUE_CARD",
+        referent_type=PAYMENT_CARD.name,
+        links={CARD_LINK: gate},
+        fixes={"hasStatus": INACTIVE},
     )
     pack = replace(
         LOADED_PACK,
@@ -340,6 +343,7 @@ def test_a_filter_binds_only_the_endpoint_it_is_named_for() -> None:
         "REPLACE_CARD",
         referent_type=PAYMENT_CARD.name,
         links={CARD_LINK: {}, replaces: {}},
+        fixes={"hasStatus": INACTIVE},
     )
     world = World(
         replace(
@@ -441,12 +445,8 @@ def test_a_link_disclosure_is_true_only_of_the_linked_target() -> None:
 def test_a_card_request_opens_a_case_about_an_account() -> None:
     world = World()
     account = world.open()
-    command = replace(
-        report_fraud(account, REPORTED_IN, kind=CaseKind("card_request")),
-        action_type="REQUEST_CARD",
-    )
 
-    event, *_ = world.accept(command)
+    event, *_ = world.accept(request_card(account, REPORTED_IN))
 
     assert isinstance(event, InitEvent)
     entry = world.registry.entry(event.new_id)

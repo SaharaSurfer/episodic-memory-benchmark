@@ -7,6 +7,10 @@ from typing import Protocol, cast
 from mbench.core.values.protocol import DecimalValueClass, ValueClass
 
 
+class MissingRead(LookupError):
+    """A sampler reads a relation that holds no plain value."""
+
+
 class PoolMembers(Protocol):
     """A pool as a draw reads it: only its members."""
 
@@ -235,7 +239,7 @@ class ByValue[V: ValueClass]:
 
         read = context.values.get(self.relation)
         if read is None:
-            raise LookupError(f"reads {self.relation!r}, which has no value")
+            raise MissingRead(f"reads {self.relation!r}, which has no value")
 
         branch = self.branches.get(read)
         if branch is None:

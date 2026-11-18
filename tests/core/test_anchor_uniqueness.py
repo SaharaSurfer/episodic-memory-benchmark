@@ -16,10 +16,10 @@ from tests.core.world import (
     open_account,
     opening_lacking,
     report_fraud,
+    request_card,
 )
 from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK, PAYMENT_CARD
 from tests.testpack.values import (
-    CaseKind,
     DepositKind,
     LastFour,
     ProductName,
@@ -188,24 +188,24 @@ def test_a_case_with_the_same_kind_and_number_is_refused() -> None:
     assert outcome == SAME_ZONE
 
 
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"kind": CaseKind("dispute")},
-        {"caseNumber": ReferenceNumber("70195")},
-    ],
-    ids=["kind", "number"],
-)
-def test_a_case_differing_in_one_anchor_part_is_accepted(
-    changes: dict[str, CaseKind | ReferenceNumber],
-) -> None:
+def test_a_case_with_another_number_is_accepted() -> None:
     world = World()
     card = world.issue_card(world.open())
     world.open_case(card)
+    command = report_fraud(
+        card, REPORTED_IN + 1, caseNumber=ReferenceNumber("70195")
+    )
 
-    outcome = world.decide(report_fraud(card, REPORTED_IN + 1, **changes))
+    assert not isinstance(world.decide(command), Refusal)
 
-    assert not isinstance(outcome, Refusal)
+
+def test_a_case_of_another_kind_with_the_same_number_is_accepted() -> None:
+    world = World()
+    card = world.issue_card(world.open())
+    world.open_case(card)
+    command = request_card(card, REPORTED_IN + 1)
+
+    assert not isinstance(world.decide(command), Refusal)
 
 
 def test_the_worlds_last_fours_are_pairwise_far() -> None:

@@ -91,8 +91,7 @@ CARD_WRITES: Mapping[str, ValueClass] = MappingProxyType(
     }
 )
 
-# Read-only for the same reason. The kind is written by hand here, though the
-# pack will fix it by the INIT.
+# Read-only for the same reason. The kind is the one `REPORT_FRAUD` fixes.
 CASE_WRITES: Mapping[str, ValueClass] = MappingProxyType(
     {
         "kind": CaseKind("fraud_report"),
@@ -150,7 +149,7 @@ class World:
 
         changes = {"lastFour": self._next_last_four(), **changes}
 
-        return _created_id(self.accept(open_account(OPENED_IN, **changes)))
+        return created_id(self.accept(open_account(OPENED_IN, **changes)))
 
     def open_lacking(self, *relations: str) -> NodeId:
         """Open an account without the relations, and give its id."""
@@ -159,19 +158,19 @@ class World:
             OPENED_IN, *relations, lastFour=self._next_last_four()
         )
 
-        return _created_id(self.accept(command))
+        return created_id(self.accept(command))
 
     def issue_card(self, account: NodeId) -> NodeId:
         """Issue a card on the account in the second session, give its id."""
 
-        return _created_id(self.accept(issue(account, ISSUED_IN)))
+        return created_id(self.accept(issue(account, ISSUED_IN)))
 
     def open_case(self, card: NodeId | None = None) -> NodeId:
         """Report fraud on the card, else a new one, give the case's id."""
 
         about = self.issue_card(self.open()) if card is None else card
 
-        return _created_id(self.accept(report_fraud(about, REPORTED_IN)))
+        return created_id(self.accept(report_fraud(about, REPORTED_IN)))
 
     def _next_last_four(self) -> LastFour:
         """The last four no account of this world has taken yet."""
@@ -185,7 +184,7 @@ class World:
         return last_four
 
 
-def _created_id(records: tuple[Record, ...]) -> NodeId:
+def created_id(records: tuple[Record, ...]) -> NodeId:
     """The id of the entity an INIT's records create."""
 
     event, *_ = records
@@ -243,6 +242,18 @@ def report_fraud(
         writes={**CASE_WRITES, **changes},
         links={CASE_LINK: about},
     )
+
+
+def request_card(
+    about: NodeId, session: int, **changes: ValueClass
+) -> InitCommand:
+    """A command opening a card request case about the entity."""
+
+    command = report_fraud(
+        about, session, **{"kind": CaseKind("card_request"), **changes}
+    )
+
+    return replace(command, action_type="REQUEST_CARD")
 
 
 def change_fee(referent: NodeId, session: int, amount: str) -> MutateCommand:

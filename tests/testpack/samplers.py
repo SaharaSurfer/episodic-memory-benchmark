@@ -9,6 +9,7 @@ from tests.testpack.values import (
     LastFour,
     MonetaryAmount,
     ProductName,
+    ReferenceNumber,
 )
 
 CHECKING = DepositKind("checking")
@@ -25,6 +26,10 @@ MONTHLY_FEES = Choice(
 )
 # Four digits as a string are not a decimal, so a list stands in for a range.
 ANY_LAST_FOUR = Choice(tuple(LastFour(f"{n:04}") for n in range(10_000)))
+# A short list, since a draw walks every option.
+CASE_NUMBERS = Choice(
+    tuple(ReferenceNumber(f"{n}") for n in range(48_000, 49_000))
+)
 
 # First values, keyed by (INIT, relation), drawn in this order: an INIT's
 # kind comes first so the samplers after it can read it.
@@ -44,6 +49,9 @@ INIT_SAMPLERS: Mapping[tuple[str, str], Sampler[Any]] = {
         "kind", {CHECKING: CHECKING_RATES, SAVINGS: SAVINGS_RATES}
     ),
     ("OPEN_DEPOSIT_ACCOUNT", "hasMonthlyFee"): MONTHLY_FEES,
+    ("ISSUE_CARD", "lastFour"): ANY_LAST_FOUR,
+    ("REPORT_FRAUD", "caseNumber"): CASE_NUMBERS,
+    ("REQUEST_CARD", "caseNumber"): CASE_NUMBERS,
 }
 
 # Next values, keyed by (entity type, relation)

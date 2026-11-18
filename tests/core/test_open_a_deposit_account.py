@@ -1,3 +1,4 @@
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -8,9 +9,25 @@ from mbench.core.legality.predicate import Reason, Refusal, decide
 from mbench.core.records.ids import IdAllocator
 from mbench.core.records.log import Disclosure, InitEvent, Record
 from mbench.core.values.protocol import ValueClass
-from tests.core.world import OPENED_IN, WRITES, World, open_account
+from tests.core.world import (
+    CARD_WRITES,
+    ISSUED_IN,
+    MISSING,
+    OPENED_IN,
+    REPORTED_IN,
+    WRITES,
+    World,
+    issue,
+    open_account,
+    report_fraud,
+)
 from tests.testpack.pack import LOADED_PACK
-from tests.testpack.values import LastFour, MonetaryAmount
+from tests.testpack.values import (
+    ACTIVE,
+    CaseKind,
+    LastFour,
+    MonetaryAmount,
+)
 
 
 def _opening_records() -> tuple[Record, ...]:
@@ -149,3 +166,30 @@ def test_a_refused_command_allocates_no_id() -> None:
     decide(command, Registry(), LOADED_PACK, allocator)
 
     assert allocator.allocate() == IdAllocator(seed=9).allocate()
+
+
+@pytest.mark.parametrize(
+    "writes",
+    [
+        {r: v for r, v in CARD_WRITES.items() if r != "hasStatus"},
+        {**CARD_WRITES, "hasStatus": ACTIVE},
+    ],
+    ids=["omitted", "another status"],
+)
+def test_a_wrong_entry_status_raises_before_any_clause_refuses(
+    writes: dict[str, ValueClass],
+) -> None:
+    # The missing endpoint would be refused by the first clause an INIT meets.
+    command = replace(issue(MISSING, ISSUED_IN), writes=writes)
+
+    with pytest.raises(ValueError, match="hasStatus"):
+        World().decide(command)
+
+
+def test_a_fixed_value_other_than_the_status_is_held_too() -> None:
+    world = World()
+    card = world.issue_card(world.open())
+    command = report_fraud(card, REPORTED_IN, kind=CaseKind("card_request"))
+
+    with pytest.raises(ValueError, match="kind"):
+        world.decide(command)

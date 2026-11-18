@@ -51,6 +51,7 @@ from tests.testpack.values import (
     ACTIVE,
     CLOSED,
     FROZEN,
+    INACTIVE,
     UNDER_REVIEW,
     LastFour,
 )
@@ -217,6 +218,7 @@ def test_a_sealed_endpoint_on_a_later_link_is_refused() -> None:
         "ISSUE_JOINT_CARD",
         referent_type=PAYMENT_CARD.name,
         links={CARD_LINK: {}, second_link: {}},
+        fixes={STATUS: INACTIVE},
     )
     world = World(
         with_action(with_entity_type(BANK_MAY_CLOSE, two_accounts), joint)
