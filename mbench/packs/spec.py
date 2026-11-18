@@ -181,6 +181,33 @@ class Source:
 
 
 @dataclass(frozen=True)
+class Linker:
+    """Entities of a type that point at another entity by a link."""
+
+    entity_type: str
+    link: str
+
+
+@dataclass(frozen=True)
+class RoleFilter:
+    """A named condition on which entity of a type a role may bind."""
+
+    name: str
+    entity_type: str
+    # The values the entity must hold, per relation.
+    values: Gate = field(default_factory=lambda: MappingProxyType({}))
+    # Whether the entity's current status must be non-terminal.
+    live: bool = False
+    # The entity must have no live entity pointing at it in any of these ways.
+    no_live_linkers: tuple[Linker, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Hold the required values read-only."""
+
+        object.__setattr__(self, "values", _frozen_gate(self.values))
+
+
+@dataclass(frozen=True)
 class LoadedPack:
     """What the core reads of a pack: its types, ActionTypes and dialogue."""
 
@@ -192,6 +219,9 @@ class LoadedPack:
     sources: Mapping[str, Source]
     # The actor whose world this is.
     owner: str
+    role_filters: Mapping[str, RoleFilter] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
         """Hold every table read-only, and refuse unmatched speaker sources."""
@@ -202,6 +232,7 @@ class LoadedPack:
             "actors",
             "speakers",
             "sources",
+            "role_filters",
         ):
             object.__setattr__(
                 self, table, MappingProxyType(dict(getattr(self, table)))
@@ -234,3 +265,30 @@ class LoadedPack:
                 return action
 
         return None
+
+    def relations_read(self, name: str) -> Mapping[str, frozenset[str]]:
+        """The relations, per entity type, that the named filter reads."""
+
+        role_filter = self.role_filters[name]
+        reads = {role_filter.entity_type: set(role_filter.values)}
+
+        if role_filter.live:
+            reads[role_filter.entity_type] |= self._status_relations(
+                role_filter.entity_type
+            )
+        for linker in role_filter.no_live_linkers:
+            reads.setdefault(linker.entity_type, set()).update(
+                {linker.link} | self._status_relations(linker.entity_type)
+            )
+
+        return {
+            entity_type: frozenset(relations)
+            for entity_type, relations in reads.items()
+        }
+
+    def _status_relations(self, entity_type: str) -> set[str]:
+        """The type's status relation, none for a type without one."""
+
+        status = self.entity_types[entity_type].status
+
+        return set() if status is None else {status}

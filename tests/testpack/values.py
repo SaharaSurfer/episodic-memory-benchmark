@@ -256,3 +256,10 @@ class LifecycleStatus(ValueClass):
         """The status as words: "under review"."""
 
         return self.payload.replace("_", " ")
+
+
+ACTIVE = LifecycleStatus("active")
+FROZEN = LifecycleStatus("frozen")
+CLOSED = LifecycleStatus("closed")
+INACTIVE = LifecycleStatus("inactive")
+LOCKED = LifecycleStatus("locked")

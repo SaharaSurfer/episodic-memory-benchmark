@@ -18,6 +18,11 @@ from mbench.core.records.log import (
     SessionRow,
 )
 from mbench.core.values.protocol import ValueClass
+from tests.core.records.handmade import (
+    OPEN_ACCOUNT,
+    disclosure_of,
+    opened_event,
+)
 from tests.testpack.values import (
     InterestRate,
     LastFour,
@@ -35,25 +40,17 @@ def _opened(
     session: int = 1,
     new_id: str = "aaaaa",
 ) -> InitEvent:
-    return InitEvent(
-        session=session,
-        initiator="CLIENT",
-        action_type="OPEN_DEPOSIT_ACCOUNT",
-        new_id=NodeId(new_id),
-        writes=writes,
-    )
+    return opened_event(NodeId(new_id), writes, session)
 
 
 def _disclosure(session: int) -> Disclosure:
-    return Disclosure(
+    return disclosure_of(
+        NodeId("aaaaa"),
+        "lastFour",
+        LastFour("4471"),
         session=session,
         source="customer",
-        action_type="OPEN_DEPOSIT_ACCOUNT",
-        initiator="CLIENT",
-        entity=NodeId("aaaaa"),
-        relation="lastFour",
-        value=LastFour("4471"),
-        node_id=NodeId("bbbbb"),
+        action_type=OPEN_ACCOUNT,
     )
 
 

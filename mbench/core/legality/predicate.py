@@ -25,8 +25,10 @@ from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
     Gate,
     InitAction,
+    Linker,
     LoadedPack,
     MutateAction,
+    RoleFilter,
     SourceKind,
 )
 
@@ -166,7 +168,7 @@ def refuse_unfit_referent(
 def refuse_unfit_endpoints(
     command: EventCommand, registry: Registry, pack: LoadedPack
 ) -> Refusal | None:
-    """Refuse an INIT whose link endpoint is unfit: missing, mistyped, gated."""
+    """Refuse an INIT whose endpoint is missing, mistyped, gated or filtered."""
 
     if not isinstance(command, InitCommand):
         return None
@@ -185,7 +187,10 @@ def refuse_unfit_endpoints(
             return Refusal(1, Reason.ENDPOINT_WRONG_TYPE)
         if not _passes(entry, action.links[link]):
             return Refusal(1, Reason.ENDPOINT_GATE_FAILED)
-        if not _passes(entry, command.filters.get(link, {})):
+        filter_name = command.filters.get(link)
+        if filter_name is not None and not _passes_filter(
+            entry, pack.role_filters[filter_name], registry, pack
+        ):
             return Refusal(1, Reason.ENDPOINT_FILTER_FAILED)
 
     return None
@@ -315,14 +320,13 @@ def _current(
 ) -> Mapping[str, Stamped]:
     """The current stamped value of each pair the command writes, if any."""
 
-    # An INIT writes a new entity, whose pairs hold nothing yet. A referent
-    # the registry lacks is the referent clause's to refuse, not these.
+    # An INIT writes a new entity, whose pairs hold nothing yet.
     if not isinstance(command, MutateCommand):
         return {}
 
     entry = registry.entry(command.referent)
-    if entry is None:
-        return {}
+    # The referent clause runs first and has refused a missing referent.
+    assert entry is not None
 
     return {
         relation: entry.values[relation]
@@ -348,7 +352,7 @@ def _writes(
 
 
 def _check_links(command: EventCommand, pack: LoadedPack) -> None:
-    """Raise unless an INIT names, and filters, only the links it writes."""
+    """Raise unless an INIT fills its links and names filters it can use."""
 
     if not isinstance(command, InitCommand):
         return
@@ -366,6 +370,13 @@ def _check_links(command: EventCommand, pack: LoadedPack) -> None:
         raise ValueError(
             f"{action.name} writes no link to filter among"
             f" {sorted(command.filters.keys() - action.links.keys())}"
+        )
+
+    unknown = set(command.filters.values()) - pack.role_filters.keys()
+    if unknown:
+        raise ValueError(
+            f"{action.name} names role filters the pack lacks:"
+            f" {sorted(unknown)}"
         )
 
 
@@ -398,6 +409,38 @@ def _passes(entry: Entry, gate: Gate) -> bool:
     return all(
         relation in entry.values and entry.values[relation].value in admitted
         for relation, admitted in gate.items()
+    )
+
+
+def _passes_filter(
+    entry: Entry,
+    role_filter: RoleFilter,
+    registry: Registry,
+    pack: LoadedPack,
+) -> bool:
+    """Whether the entity is one the role filter lets a role bind."""
+
+    return (
+        entry.type == role_filter.entity_type
+        and _passes(entry, role_filter.values)
+        and (not role_filter.live or is_live(entry, pack))
+        and not any(
+            _has_live_linker(entry, linker, registry, pack)
+            for linker in role_filter.no_live_linkers
+        )
+    )
+
+
+def _has_live_linker(
+    entry: Entry, linker: Linker, registry: Registry, pack: LoadedPack
+) -> bool:
+    """Whether a live entity points at the entry in the linker's way."""
+
+    return any(
+        other.type == linker.entity_type
+        and other.links.get(linker.link) == entry.id
+        and is_live(other, pack)
+        for other in registry.entries()
     )
 
 

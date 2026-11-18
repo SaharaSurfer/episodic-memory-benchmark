@@ -2,8 +2,10 @@ from mbench.packs.spec import (
     Actor,
     EntityType,
     InitAction,
+    Linker,
     LoadedPack,
     MutateAction,
+    RoleFilter,
     Source,
     SourceKind,
     Speaker,
@@ -100,6 +102,34 @@ SOURCES = (
     Source("operator", SourceKind.SPEAKER, authority=3),
 )
 
+CHECKING_ACCOUNT = "CHECKING_ACCOUNT"
+LIVE_ACCOUNT = "LIVE_ACCOUNT"
+NO_LIVE_CARD = "NO_LIVE_CARD"
+CARD_ELIGIBLE_ACCOUNT = "CARD_ELIGIBLE_ACCOUNT"
+
+_CHECKING_ONLY = {"kind": frozenset({DepositKind("checking")})}
+_CARD_ON_ACCOUNT = Linker(PAYMENT_CARD.name, "hasCorrespondingAccount")
+
+ROLE_FILTERS = (
+    RoleFilter(
+        CHECKING_ACCOUNT,
+        DEPOSIT_ACCOUNT.name,
+        values=_CHECKING_ONLY,
+    ),
+    RoleFilter(LIVE_ACCOUNT, DEPOSIT_ACCOUNT.name, live=True),
+    RoleFilter(
+        NO_LIVE_CARD, DEPOSIT_ACCOUNT.name, no_live_linkers=(_CARD_ON_ACCOUNT,)
+    ),
+    # What a debit card asks of its account: all three conditions at once.
+    RoleFilter(
+        CARD_ELIGIBLE_ACCOUNT,
+        DEPOSIT_ACCOUNT.name,
+        values=_CHECKING_ONLY,
+        live=True,
+        no_live_linkers=(_CARD_ON_ACCOUNT,),
+    ),
+)
+
 LOADED_PACK = LoadedPack(
     entity_types={
         entity_type.name: entity_type
@@ -132,4 +162,7 @@ LOADED_PACK = LoadedPack(
     speakers={speaker.id: speaker for speaker in SPEAKERS},
     sources={source.id: source for source in SOURCES},
     owner=CLIENT.name,
+    role_filters={
+        role_filter.name: role_filter for role_filter in ROLE_FILTERS
+    },
 )

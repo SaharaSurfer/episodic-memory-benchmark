@@ -1,8 +1,10 @@
 from collections.abc import Mapping
+from dataclasses import replace
 from decimal import Decimal
 from types import MappingProxyType
 
-from mbench.core.folds.registry import fold_world
+from mbench.core.folds.graph import Graph, fold_trace
+from mbench.core.folds.registry import Registry, fold_world
 from mbench.core.legality.predicate import Refusal, decide
 from mbench.core.records.commands import (
     Command,
@@ -20,13 +22,15 @@ from mbench.core.records.log import (
 )
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import LoadedPack
+from tests.core.records.handmade import OPEN_ACCOUNT
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
+    ACTIVE,
+    INACTIVE,
     CardType,
     DepositKind,
     InterestRate,
     LastFour,
-    LifecycleStatus,
     MonetaryAmount,
     ProductName,
 )
@@ -35,6 +39,9 @@ OPENED_IN = 1
 OPENING_RATE = "4.25"
 ISSUED_IN = 2
 CARD_LINK = "hasCorrespondingAccount"
+
+# No entity ever holds this id.
+MISSING = NodeId("zzzzz")
 
 # Each account the world opens takes the next, so no two share an anchor. The
 # first is the one in WRITES, so an opening with WRITES as they are clashes
@@ -50,7 +57,7 @@ WRITES: Mapping[str, ValueClass] = MappingProxyType(
         "productName": ProductName("High Yield Savings"),
         "hasInterestRate": InterestRate(Decimal(OPENING_RATE)),
         "hasMonthlyFee": MonetaryAmount(Decimal("5")),
-        "hasStatus": LifecycleStatus("active"),
+        "hasStatus": ACTIVE,
     }
 )
 
@@ -60,7 +67,7 @@ CARD_WRITES: Mapping[str, ValueClass] = MappingProxyType(
     {
         "cardType": CardType("debit"),
         "lastFour": LastFour("9012"),
-        "hasStatus": LifecycleStatus("inactive"),
+        "hasStatus": INACTIVE,
     }
 )
 
@@ -82,12 +89,22 @@ class World:
 
         return self.log.records
 
+    @property
+    def registry(self) -> Registry:
+        """The registry folded from the log so far."""
+
+        return fold_world(self.records, self.pack)
+
+    @property
+    def graph(self) -> Graph:
+        """The graph folded from the log so far."""
+
+        return fold_trace(self.records, self.pack)
+
     def decide(self, command: Command) -> AcceptedCommand | Refusal:
         """Decide the command against the log so far, appending nothing."""
 
-        registry = fold_world(self.records, self.pack)
-
-        return decide(command, registry, self.pack, self.allocator)
+        return decide(command, self.registry, self.pack, self.allocator)
 
     def accept(self, command: Command) -> tuple[Record, ...]:
         """Decide the command, append it to the log and give its records."""
@@ -98,26 +115,46 @@ class World:
         self.log = self.log.append([outcome])
         return outcome.records
 
-    def open(self) -> NodeId:
-        """Open a deposit account in the first session, and give its id."""
+    def open(self, **changes: ValueClass) -> NodeId:
+        """Open an account in the first session, and give its id."""
+
+        changes = {"lastFour": self._next_last_four(), **changes}
+
+        return _created_id(self.accept(open_account(OPENED_IN, **changes)))
+
+    def open_lacking(self, *relations: str) -> NodeId:
+        """Open an account without the relations, and give its id."""
+
+        command = opening_lacking(
+            OPENED_IN, *relations, lastFour=self._next_last_four()
+        )
+
+        return _created_id(self.accept(command))
+
+    def issue_card(self, account: NodeId) -> NodeId:
+        """Issue a card on the account in the second session, give its id."""
+
+        return _created_id(self.accept(issue(account, ISSUED_IN)))
+
+    def _next_last_four(self) -> LastFour:
+        """The last four no account of this world has taken yet."""
 
         assert self.opened_count < len(LAST_FOURS), (
             "every last four is taken: add another to LAST_FOURS"
         )
         last_four = LastFour(LAST_FOURS[self.opened_count])
 
-        event, *_ = self.accept(open_account(OPENED_IN, lastFour=last_four))
-        assert isinstance(event, InitEvent)
-
         self.opened_count += 1
-        return event.new_id
+        return last_four
 
-    def issue_card(self, account: NodeId) -> NodeId:
-        """Issue a card on the account in the second session, give its id."""
 
-        event, *_ = self.accept(issue(account, ISSUED_IN))
-        assert isinstance(event, InitEvent)
-        return event.new_id
+def _created_id(records: tuple[Record, ...]) -> NodeId:
+    """The id of the entity an INIT's records create."""
+
+    event, *_ = records
+    assert isinstance(event, InitEvent)
+
+    return event.new_id
 
 
 def open_account(session: int, **changes: ValueClass) -> InitCommand:
@@ -126,10 +163,21 @@ def open_account(session: int, **changes: ValueClass) -> InitCommand:
     return InitCommand(
         session=session,
         initiator="CLIENT",
-        action_type="OPEN_DEPOSIT_ACCOUNT",
+        action_type=OPEN_ACCOUNT,
         source="customer",
         writes={**WRITES, **changes},
     )
+
+
+def opening_lacking(
+    session: int, *relations: str, **changes: ValueClass
+) -> InitCommand:
+    """A command like `open_account`, leaving the relations out."""
+
+    command = open_account(session, **changes)
+    writes = {r: v for r, v in command.writes.items() if r not in relations}
+
+    return replace(command, writes=writes)
 
 
 def issue(account: NodeId, session: int) -> InitCommand:

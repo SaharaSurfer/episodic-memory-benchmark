@@ -88,5 +88,5 @@ def test_with_no_speaker_for_the_initiator_and_no_document_it_raises() -> None:
     account = world.open()
     command = replace(reprice(account, 2, "3.90"), source=None)
 
-    with pytest.raises(LookupError):
+    with pytest.raises(LookupError, match="no source can state"):
         world.decide(command)

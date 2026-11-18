@@ -7,13 +7,13 @@ import pytest
 from mbench.core.folds.graph import (
     EdgeKind,
     Graph,
-    ValueNode,
     fold_trace,
 )
-from mbench.core.folds.registry import Stamped, fold_world
+from mbench.core.folds.registry import Stamped
 from mbench.core.records.commands import Command, InitCommand, MutateCommand
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import Disclosure, MutateEvent
+from tests.core.records.handmade import disclosure_of
 from tests.core.world import (
     OPENED_IN,
     WRITES,
@@ -24,9 +24,9 @@ from tests.core.world import (
 )
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
+    CLOSED,
     InterestRate,
     LastFour,
-    LifecycleStatus,
     MonetaryAmount,
 )
 
@@ -82,7 +82,7 @@ def test_after_a_mutate_the_registry_holds_the_new_value_and_stamp() -> None:
     account = world.open()
     world.accept(change_fee(account, 2, "0"))
 
-    entry = fold_world(world.records, LOADED_PACK).entry(account)
+    entry = world.registry.entry(account)
 
     assert entry is not None
     assert entry.type == "DEPOSIT_ACCOUNT"
@@ -99,27 +99,11 @@ def test_a_mutate_leaves_other_entities_unchanged() -> None:
     world = World()
     account = world.open()
     other = world.open()
-    before = fold_world(world.records, LOADED_PACK).entry(other)
+    before = world.registry.entry(other)
 
     world.accept(change_fee(account, 2, "0"))
 
-    assert fold_world(world.records, LOADED_PACK).entry(other) == before
-
-
-def test_the_graph_gains_a_second_value_node_in_the_mutate_session() -> None:
-    world = World()
-    account = world.open()
-    _, disclosure = world.accept(change_fee(account, 2, "0"))
-    assert isinstance(disclosure, Disclosure)
-
-    graph = fold_trace(world.records, LOADED_PACK)
-
-    chain = graph.update_chain((account, "hasMonthlyFee"))
-    assert len(chain) == 2
-    assert chain[-1] == ValueNode(
-        disclosure.node_id, MonetaryAmount(Decimal("0"))
-    )
-    assert _session_of(graph, disclosure.node_id) == 2
+    assert world.registry.entry(other) == before
 
 
 def test_the_entity_keeps_the_session_of_its_init() -> None:
@@ -127,7 +111,7 @@ def test_the_entity_keeps_the_session_of_its_init() -> None:
     account = world.open()
     world.accept(change_fee(account, 2, "0"))
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
 
     assert _session_of(graph, account) == OPENED_IN
 
@@ -136,12 +120,14 @@ def test_the_graph_answers_a_pairs_chain_versions_and_latest_node() -> None:
     world = World()
     account = world.open()
     world.accept(reprice(account, 2, "3.90"))
-    world.accept(reprice(account, 4, "3.50"))
+    _, disclosure = world.accept(reprice(account, 4, "3.50"))
+    assert isinstance(disclosure, Disclosure)
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
     pair = (account, "hasInterestRate")
 
     chain = graph.update_chain(pair)
+    assert chain[-1].id == disclosure.node_id
     assert [node.value for node in chain] == [
         InterestRate(Decimal("4.25")),
         InterestRate(Decimal("3.90")),
@@ -157,7 +143,7 @@ def test_a_mutate_leaves_another_relations_chain_at_one() -> None:
     account = world.open()
     world.accept(reprice(account, 2, "3.90"))
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
     pair = (account, "lastFour")
 
     assert graph.versions(pair) == 1
@@ -200,7 +186,7 @@ def test_a_chain_returning_to_an_earlier_value_counts_every_write() -> None:
     world.accept(change_fee(account, 2, "0"))
     world.accept(change_fee(account, 3, "5"))
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
     pair = (account, "hasMonthlyFee")
 
     chain = graph.update_chain(pair)
@@ -240,7 +226,7 @@ def test_a_command_naming_an_action_of_the_other_shape_raises(
     world = World()
     account = world.open()
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="cannot take"):
         world.decide(command(account))
 
 
@@ -249,7 +235,7 @@ def test_a_command_naming_an_action_of_the_other_shape_raises(
     [
         lambda account: replace(
             move(account, 2, "FREEZE_DEPOSIT_ACCOUNT"),
-            value=LifecycleStatus("closed"),
+            value=CLOSED,
         ),
         lambda account: replace(reprice(account, 2, "3.90"), value=None),
     ],
@@ -261,24 +247,20 @@ def test_a_mutate_naming_a_value_its_action_fixes_or_needs_raises(
     world = World()
     account = world.open()
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="needs a value"):
         world.decide(command(account))
 
 
-def test_only_an_entitys_first_disclosure_is_read_for_its_type() -> None:
+def test_a_later_disclosure_may_name_an_action_the_pack_lacks() -> None:
     world = World()
     account = world.open()
-    later = Disclosure(
+    # A value other than the current one, so it is a new node, not a mention.
+    later = disclosure_of(
+        account,
+        "lastFour",
+        LastFour("9012"),
         session=2,
-        source="operator",
         action_type="NOT_A_PACK_ACTION",
-        initiator="CLIENT",
-        entity=account,
-        relation="lastFour",
-        # A value other than the current one, so the fold makes a node rather
-        # than a mention, and reaches the entity-type lookup.
-        value=LastFour("9012"),
-        node_id=NodeId("zzzzz"),
     )
 
     graph = fold_trace((*world.records, later), LOADED_PACK)

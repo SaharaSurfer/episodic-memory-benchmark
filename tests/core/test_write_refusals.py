@@ -72,6 +72,15 @@ def test_a_mutate_value_its_relation_does_not_hold_is_refused(
     assert outcome == Refusal(clause=3, reason=Reason.INVALID_VALUE)
 
 
+def test_a_first_write_of_a_relation_the_entity_lacks_is_accepted() -> None:
+    world = World()
+    account = world.open_lacking("hasInterestRate")
+
+    outcome = world.decide(reprice(account, 2, "3.90"))
+
+    assert not isinstance(outcome, Refusal)
+
+
 def test_a_mutate_to_the_pairs_current_value_is_refused() -> None:
     world = World()
     account = world.open()

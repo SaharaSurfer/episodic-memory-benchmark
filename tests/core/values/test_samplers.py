@@ -97,13 +97,6 @@ def test_a_choice_whose_weights_do_not_match_its_options_is_an_error() -> None:
         draw(Choice("savings_products", weights=(1, 1)), _stream(), pools=POOLS)
 
 
-def test_a_range_draws_valid_values_of_its_class() -> None:
-    stream = _stream()
-    draws = [draw(SAVINGS_RATES, stream) for _ in range(2000)]
-
-    assert all(isinstance(r, InterestRate) and r.is_valid() for r in draws)
-
-
 def test_a_range_lands_only_on_its_step_and_reaches_both_ends() -> None:
     sampler = Range(
         MonetaryAmount, Decimal("500"), Decimal("2000"), Decimal("500")
@@ -169,6 +162,19 @@ def test_a_step_moves_either_way_by_a_size_within_its_limits() -> None:
     assert all(r is not None and r.is_valid() for r in draws)
     assert any(r is not None and r.payload < current.payload for r in draws)
     assert any(r is not None and r.payload > current.payload for r in draws)
+
+
+def test_a_step_reaches_its_largest_size_and_both_ends_of_its_range() -> None:
+    sampler = Step(
+        Range(InterestRate, Decimal("1.00"), Decimal("1.20"), Decimal("0.05")),
+        Decimal("0.05"),
+        Decimal("0.10"),
+    )
+    stream = _stream()
+
+    draws = {draw_step(sampler, _rate("1.10"), stream) for _ in range(200)}
+
+    assert draws == {_rate(r) for r in ("1.00", "1.05", "1.15", "1.20")}
 
 
 def test_a_step_at_the_bottom_of_its_range_only_moves_up() -> None:
@@ -274,7 +280,14 @@ def test_exclusion_compares_values_canonically() -> None:
 
 def test_exclusions_off_the_range_or_of_another_class_are_ignored() -> None:
     sampler = Range(MonetaryAmount, Decimal("5"), Decimal("10"), Decimal("5"))
-    excluded = [_amount("7.50"), _amount("20"), _rate("5"), CHECKING]
+    # 15 is one step past the top of the range, 20 is further off.
+    excluded = [
+        _amount("7.50"),
+        _amount("15"),
+        _amount("20"),
+        _rate("5"),
+        CHECKING,
+    ]
     stream = _stream()
 
     drawn = {draw(sampler, stream, exclude=excluded) for _ in range(50)}

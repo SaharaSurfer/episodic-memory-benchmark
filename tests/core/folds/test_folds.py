@@ -1,29 +1,27 @@
-from mbench.core.folds.graph import Graph, fold_trace
-from mbench.core.folds.registry import Registry, fold_world
+from mbench.core.folds.graph import fold_trace
+from mbench.core.folds.registry import fold_world
 from mbench.core.records.ids import NodeId
-from mbench.core.records.log import Disclosure, InitEvent, Record
+from mbench.core.records.log import Record
 from mbench.core.values.protocol import ValueClass
+from tests.core.records.handmade import (
+    OPEN_ACCOUNT,
+    disclosure_of,
+    opened_event,
+)
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import LastFour
 
 
 def _opened(entity: str, node: str, value: ValueClass) -> tuple[Record, ...]:
     return (
-        InitEvent(
-            session=1,
-            initiator="CLIENT",
-            action_type="OPEN_DEPOSIT_ACCOUNT",
-            new_id=NodeId(entity),
-            writes={"lastFour": value},
-        ),
-        Disclosure(
+        opened_event(NodeId(entity), {"lastFour": value}),
+        disclosure_of(
+            NodeId(entity),
+            "lastFour",
+            value,
             session=1,
             source="customer",
-            action_type="OPEN_DEPOSIT_ACCOUNT",
-            initiator="CLIENT",
-            entity=NodeId(entity),
-            relation="lastFour",
-            value=value,
+            action_type=OPEN_ACCOUNT,
             node_id=NodeId(node),
         ),
     )
@@ -43,11 +41,6 @@ def test_both_folds_start_from_the_state_they_are_given() -> None:
     }
     assert registry == fold_world(first + second, LOADED_PACK)
     assert graph == fold_trace(first + second, LOADED_PACK)
-
-
-def test_both_folds_start_empty_by_default() -> None:
-    assert fold_world((), LOADED_PACK) == Registry()
-    assert fold_trace((), LOADED_PACK) == Graph()
 
 
 def test_the_folds_accept_records_the_predicate_would_refuse() -> None:

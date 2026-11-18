@@ -1,15 +1,16 @@
 from collections.abc import Mapping
 from dataclasses import replace
+from decimal import Decimal
 
 import pytest
 
-from mbench.core.folds.graph import Edge, EdgeKind, fold_trace
-from mbench.core.folds.registry import fold_world
+from mbench.core.folds.graph import Edge, EdgeKind
 from mbench.core.legality.predicate import (
     Reason,
     Refusal,
     refuse_untrue_disclosure,
 )
+from mbench.core.records.commands import InitCommand
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import (
     AcceptedCommand,
@@ -17,19 +18,48 @@ from mbench.core.records.log import (
     InitEvent,
     Link,
 )
-from mbench.packs.spec import Gate, InitAction
+from mbench.packs.spec import Gate, InitAction, Linker, RoleFilter
+from tests.core.records.handmade import disclosure_of
 from tests.core.world import (
     CARD_LINK,
     CARD_WRITES,
     ISSUED_IN,
+    MISSING,
     World,
     issue,
     move,
 )
-from tests.testpack.pack import LOADED_PACK, PAYMENT_CARD
-from tests.testpack.values import DepositKind, LastFour, LifecycleStatus
+from tests.testpack.pack import (
+    CARD_ELIGIBLE_ACCOUNT,
+    CHECKING_ACCOUNT,
+    DEPOSIT_ACCOUNT,
+    LIVE_ACCOUNT,
+    LOADED_PACK,
+    NO_LIVE_CARD,
+    PAYMENT_CARD,
+)
+from tests.testpack.values import (
+    ACTIVE,
+    DepositKind,
+    LastFour,
+    MonetaryAmount,
+)
 
-MISSING = NodeId("zzzzz")
+FILTER_FAILED = Refusal(clause=1, reason=Reason.ENDPOINT_FILTER_FAILED)
+
+
+def filtered(account: NodeId, session: int, name: str) -> InitCommand:
+    """A command issuing a card, its endpoint under the named filter."""
+
+    return replace(issue(account, session), filters={CARD_LINK: name})
+
+
+def second_card(account: NodeId, session: int, name: str) -> InitCommand:
+    """A filtered issue whose anchor differs from the first card's."""
+
+    writes = {**CARD_WRITES, "lastFour": LastFour("5577")}
+
+    return replace(filtered(account, session, name), writes=writes)
 
 
 def _with_endpoint_gate(gate: Gate) -> World:
@@ -41,6 +71,12 @@ def _with_endpoint_gate(gate: Gate) -> World:
         action_types={**LOADED_PACK.action_types, action.name: action},
     )
     return World(pack)
+
+
+def _with_filter(role_filter: RoleFilter) -> World:
+    return World(
+        replace(LOADED_PACK, role_filters={role_filter.name: role_filter})
+    )
 
 
 def test_the_init_event_carries_its_links_beside_its_values() -> None:
@@ -82,7 +118,7 @@ def test_a_link_is_a_structural_edge_and_not_a_value_node() -> None:
 
     card = world.issue_card(account)
 
-    graph = fold_trace(world.records, world.pack)
+    graph = world.graph
     structural = {e for e in graph.edges() if e.kind is EdgeKind.STRUCTURAL}
     assert structural == {Edge(EdgeKind.STRUCTURAL, card, account, CARD_LINK)}
     assert graph.versions((card, CARD_LINK)) == 0
@@ -95,7 +131,7 @@ def test_the_registry_entry_holds_the_link() -> None:
 
     card = world.issue_card(account)
 
-    registry = fold_world(world.records, world.pack)
+    registry = world.registry
     card_entry, account_entry = registry.entry(card), registry.entry(account)
     assert card_entry is not None
     assert account_entry is not None
@@ -112,7 +148,7 @@ def test_later_writes_to_the_card_keep_its_link() -> None:
     world.accept(move(card, 3, "ACTIVATE_CARD"))
     world.accept(move(card, 4, "LOCK_CARD"))
 
-    entry = fold_world(world.records, world.pack).entry(card)
+    entry = world.registry.entry(card)
     assert entry is not None
     assert entry.links == {CARD_LINK: account}
 
@@ -135,9 +171,7 @@ def test_an_endpoint_of_a_type_the_link_does_not_point_at_is_refused() -> None:
 
 
 def test_an_endpoint_failing_its_gate_is_refused() -> None:
-    world = _with_endpoint_gate(
-        {"hasStatus": frozenset({LifecycleStatus("active")})}
-    )
+    world = _with_endpoint_gate({"hasStatus": frozenset({ACTIVE})})
     account = world.open()
     passing = world.decide(issue(account, 2))
     world.accept(move(account, 2, "FREEZE_DEPOSIT_ACCOUNT"))
@@ -148,21 +182,185 @@ def test_an_endpoint_failing_its_gate_is_refused() -> None:
     assert outcome == Refusal(clause=1, reason=Reason.ENDPOINT_GATE_FAILED)
 
 
-def test_an_endpoint_failing_its_filter_is_refused() -> None:
-    world = World()
-    account = world.open()  # a savings account
+def test_a_gate_on_a_relation_the_endpoint_lacks_refuses_it() -> None:
+    world = _with_endpoint_gate(
+        {"hasMonthlyFee": frozenset({MonetaryAmount(Decimal("5"))})}
+    )
+    account = world.open_lacking("hasMonthlyFee")
 
-    def wanting(kind: str) -> AcceptedCommand | Refusal:
-        command = replace(
-            issue(account, ISSUED_IN),
-            filters={CARD_LINK: {"kind": frozenset({DepositKind(kind)})}},
-        )
+    outcome = world.decide(issue(account, ISSUED_IN))
+
+    assert outcome == Refusal(clause=1, reason=Reason.ENDPOINT_GATE_FAILED)
+
+
+def test_an_endpoint_failing_its_named_filter_is_refused() -> None:
+    world = World()
+    savings = world.open()
+    checking = world.open(kind=DepositKind("checking"))
+
+    passing = world.decide(filtered(checking, ISSUED_IN, CHECKING_ACCOUNT))
+    outcome = world.decide(filtered(savings, ISSUED_IN, CHECKING_ACCOUNT))
+
+    assert not isinstance(passing, Refusal)
+    assert outcome == FILTER_FAILED
+
+
+def test_an_accepted_init_keeps_its_filter_names() -> None:
+    world = World()
+    account = world.open(kind=DepositKind("checking"))
+    command = filtered(account, ISSUED_IN, CHECKING_ACCOUNT)
+
+    outcome = world.decide(command)
+
+    assert isinstance(outcome, AcceptedCommand)
+    assert isinstance(outcome.command, InitCommand)
+    assert outcome.command.filters == {CARD_LINK: CHECKING_ACCOUNT}
+
+
+def test_a_filter_of_another_type_refuses_the_endpoint() -> None:
+    world = _with_filter(RoleFilter("A_CARD", PAYMENT_CARD.name))
+    account = world.open()
+
+    outcome = world.decide(filtered(account, ISSUED_IN, "A_CARD"))
+
+    assert outcome == FILTER_FAILED
+
+
+def test_a_filter_can_require_a_live_endpoint() -> None:
+    world = World()
+    account = world.open()
+    world.accept(move(account, 2, "FREEZE_DEPOSIT_ACCOUNT"))
+    frozen = world.decide(filtered(account, 3, LIVE_ACCOUNT))
+    world.accept(move(account, 3, "CLOSE_DEPOSIT_ACCOUNT"))
+
+    outcome = world.decide(filtered(account, 4, LIVE_ACCOUNT))
+
+    assert not isinstance(frozen, Refusal)
+    assert outcome == FILTER_FAILED
+
+
+def test_a_filter_not_asking_for_liveness_admits_a_closed_endpoint() -> None:
+    world = World()
+    account = world.open(kind=DepositKind("checking"))
+    world.accept(move(account, 2, "CLOSE_DEPOSIT_ACCOUNT"))
+
+    outcome = world.decide(filtered(account, 3, CHECKING_ACCOUNT))
+
+    assert not isinstance(outcome, Refusal)
+
+
+def test_a_filter_can_refuse_an_endpoint_with_a_live_card_on_it() -> None:
+    world = World()
+    account = world.open()
+    bare = world.decide(filtered(account, ISSUED_IN, NO_LIVE_CARD))
+    world.issue_card(account)
+
+    outcome = world.decide(second_card(account, 3, NO_LIVE_CARD))
+
+    assert not isinstance(bare, Refusal)
+    assert outcome == FILTER_FAILED
+
+
+def test_a_closed_card_does_not_count_against_its_account() -> None:
+    world = World()
+    account = world.open()
+    card = world.issue_card(account)
+    world.accept(move(card, 3, "CLOSE_CARD"))
+
+    outcome = world.decide(second_card(account, 4, NO_LIVE_CARD))
+
+    assert not isinstance(outcome, Refusal)
+
+
+def test_a_live_card_on_another_account_does_not_count() -> None:
+    world = World()
+    account = world.open()
+    world.issue_card(world.open())
+
+    outcome = world.decide(second_card(account, 3, NO_LIVE_CARD))
+
+    assert not isinstance(outcome, Refusal)
+
+
+@pytest.mark.parametrize(
+    "linker",
+    [
+        Linker(DEPOSIT_ACCOUNT.name, CARD_LINK),
+        Linker(PAYMENT_CARD.name, "replaces"),
+    ],
+    ids=["another-type", "another-link"],
+)
+def test_only_the_named_type_and_link_count_against_an_endpoint(
+    linker: Linker,
+) -> None:
+    role_filter = RoleFilter(
+        "NO_LINKER", DEPOSIT_ACCOUNT.name, no_live_linkers=(linker,)
+    )
+    world = _with_filter(role_filter)
+    account = world.open()
+    world.issue_card(account)
+
+    outcome = world.decide(second_card(account, 3, role_filter.name))
+
+    assert not isinstance(outcome, Refusal)
+
+
+def test_a_filter_holds_only_when_all_its_conditions_do() -> None:
+    world = World()
+    checking = DepositKind("checking")
+    savings = world.open()
+    closed = world.open(kind=checking)
+    carded = world.open(kind=checking)
+    eligible = world.open(kind=checking)
+    world.issue_card(carded)
+    world.accept(move(closed, 2, "CLOSE_DEPOSIT_ACCOUNT"))
+
+    def outcome(account: NodeId) -> AcceptedCommand | Refusal:
+        command = second_card(account, 3, CARD_ELIGIBLE_ACCOUNT)
         return world.decide(command)
 
-    assert not isinstance(wanting("savings"), Refusal)
-    assert wanting("checking") == Refusal(
-        clause=1, reason=Reason.ENDPOINT_FILTER_FAILED
+    assert not isinstance(outcome(eligible), Refusal)
+    assert outcome(savings) == FILTER_FAILED
+    assert outcome(closed) == FILTER_FAILED
+    assert outcome(carded) == FILTER_FAILED
+
+
+def test_a_filter_binds_only_the_endpoint_it_is_named_for() -> None:
+    replaces = "replaces"
+    card_type = replace(
+        PAYMENT_CARD,
+        links={**PAYMENT_CARD.links, replaces: frozenset({PAYMENT_CARD.name})},
     )
+    action = InitAction(
+        "REPLACE_CARD",
+        referent_type=PAYMENT_CARD.name,
+        links={CARD_LINK: {}, replaces: {}},
+    )
+    world = World(
+        replace(
+            LOADED_PACK,
+            entity_types={
+                **LOADED_PACK.entity_types,
+                card_type.name: card_type,
+            },
+            action_types={**LOADED_PACK.action_types, action.name: action},
+        )
+    )
+    account = world.open(kind=DepositKind("checking"))
+    old_card = world.issue_card(account)
+    command = replace(
+        second_card(account, 3, CHECKING_ACCOUNT),
+        action_type=action.name,
+        links={CARD_LINK: account, replaces: old_card},
+    )
+
+    on_the_account = world.decide(command)
+    on_the_card = world.decide(
+        replace(command, filters={replaces: CHECKING_ACCOUNT})
+    )
+
+    assert not isinstance(on_the_account, Refusal)
+    assert on_the_card == FILTER_FAILED
 
 
 def test_an_endpoint_need_not_be_live() -> None:
@@ -200,11 +398,20 @@ def test_an_init_must_name_exactly_the_links_it_writes(
 
 def test_a_filter_on_a_link_the_init_does_not_write_is_a_caller_bug() -> None:
     world = World()
+    command = replace(
+        issue(MISSING, ISSUED_IN), filters={"replaces": CHECKING_ACCOUNT}
+    )
 
     with pytest.raises(ValueError, match="filter"):
-        world.decide(
-            replace(issue(MISSING, ISSUED_IN), filters={"replaces": {}})
-        )
+        world.decide(command)
+
+
+def test_a_filter_the_pack_does_not_hold_is_a_caller_bug() -> None:
+    world = World()
+
+    # The endpoint is missing too: the name is checked before any clause.
+    with pytest.raises(ValueError, match="filter"):
+        world.decide(filtered(MISSING, ISSUED_IN, "NO_SUCH_FILTER"))
 
 
 def test_a_link_disclosure_is_true_only_of_the_linked_target() -> None:
@@ -212,18 +419,11 @@ def test_a_link_disclosure_is_true_only_of_the_linked_target() -> None:
     account = world.open()
     other = world.open()
     card = world.issue_card(account)
-    registry = fold_world(world.records, world.pack)
+    registry = world.registry
 
     def stating(entity: NodeId, target: NodeId) -> Refusal | None:
-        disclosure = Disclosure(
-            session=3,
-            source="operator",
-            action_type="ISSUE_CARD",
-            initiator="BANK",
-            entity=entity,
-            relation=CARD_LINK,
-            value=Link(target),
-            node_id=NodeId("aaaaa"),
+        disclosure = disclosure_of(
+            entity, CARD_LINK, Link(target), action_type="ISSUE_CARD"
         )
         return refuse_untrue_disclosure(disclosure, registry)
 

@@ -5,15 +5,17 @@ import pytest
 
 from mbench.core.legality.predicate import Reason, Refusal
 from mbench.core.values.protocol import Zone
-from mbench.packs.spec import EntityType
+from mbench.packs.spec import EntityType, LoadedPack
 from tests.core.world import (
+    CARD_WRITES,
     LAST_FOURS,
     World,
     issue,
     move,
     open_account,
+    opening_lacking,
 )
-from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK
+from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK, PAYMENT_CARD
 from tests.testpack.values import DepositKind, LastFour, ProductName
 
 SAME_ZONE = Refusal(clause=7, reason=Reason.ANCHOR_SAME_ZONE)
@@ -21,6 +23,14 @@ SAME_ZONE = Refusal(clause=7, reason=Reason.ANCHOR_SAME_ZONE)
 # Every zoned class in the test pack is in the same zone only when equal, so
 # these tests cannot tell a zone comparison from an equality one. Telling them
 # apart needs a class whose same zone holds more than the value itself.
+
+
+def _with_types(*entity_types: EntityType) -> LoadedPack:
+    changed = {entity_type.name: entity_type for entity_type in entity_types}
+
+    return replace(
+        LOADED_PACK, entity_types={**LOADED_PACK.entity_types, **changed}
+    )
 
 
 def test_an_anchor_part_that_is_not_a_relation_of_the_type_is_refused() -> None:
@@ -97,12 +107,8 @@ def _anchored_on_product_name() -> World:
 
     # Only a type never named may anchor on a class without zones.
     unnamed = replace(DEPOSIT_ACCOUNT, anchor=("productName",), nameable=False)
-    pack = replace(
-        LOADED_PACK,
-        entity_types={**LOADED_PACK.entity_types, unnamed.name: unnamed},
-    )
 
-    world = World(pack)
+    world = World(_with_types(unnamed))
     world.open()
     return world
 
@@ -120,6 +126,46 @@ def test_an_unequal_anchor_without_zones_is_accepted() -> None:
     product = ProductName("Goal Saver")
 
     outcome = world.decide(open_account(2, productName=product))
+
+    assert not isinstance(outcome, Refusal)
+
+
+def test_a_type_with_no_anchor_never_clashes() -> None:
+    unanchored = replace(DEPOSIT_ACCOUNT, anchor=(), nameable=False)
+    world = World(_with_types(unanchored))
+    world.open()
+
+    outcome = world.decide(open_account(2))
+
+    assert not isinstance(outcome, Refusal)
+
+
+def test_entities_of_two_types_never_clash() -> None:
+    world = World(
+        _with_types(
+            replace(DEPOSIT_ACCOUNT, anchor=("lastFour",)),
+            replace(PAYMENT_CARD, anchor=("lastFour",)),
+        )
+    )
+    account = world.open(lastFour=CARD_WRITES["lastFour"])
+
+    outcome = world.decide(issue(account, 2))
+
+    assert not isinstance(outcome, Refusal)
+
+
+@pytest.mark.parametrize(
+    ("first_lacks", "second_lacks"),
+    [(("lastFour",), ()), ((), ("lastFour",))],
+    ids=["the existing entity", "the new one"],
+)
+def test_an_anchor_part_one_side_lacks_cannot_clash(
+    first_lacks: tuple[str, ...], second_lacks: tuple[str, ...]
+) -> None:
+    world = World()
+    world.accept(opening_lacking(1, *first_lacks))
+
+    outcome = world.decide(opening_lacking(2, *second_lacks))
 
     assert not isinstance(outcome, Refusal)
 

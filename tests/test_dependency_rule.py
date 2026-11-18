@@ -62,6 +62,17 @@ def test_a_relative_import_of_a_concrete_pack_is_reported(
     ]
 
 
+def test_a_relative_import_in_a_package_init_is_reported(
+    tmp_path: Path,
+) -> None:
+    root = _package(tmp_path, "")
+    _write(root, "core/__init__.py", "from ..packs.finance import types\n")
+
+    assert pack_imports_beyond_spec(root) == [
+        ForbiddenImport("mbench.core", "mbench.packs.finance.types")
+    ]
+
+
 def test_an_import_nested_in_a_function_is_reported(tmp_path: Path) -> None:
     root = _package(
         tmp_path, "def f() -> None:\n    import mbench.packs.finance\n"
@@ -106,7 +117,9 @@ def _distinctive_test_pack_names() -> set[str]:
     names = {
         *pack.entity_types,
         *(r for t in pack.entity_types.values() for r in t.relations),
+        *(link for t in pack.entity_types.values() for link in t.links),
         *pack.action_types,
+        *pack.role_filters,
         *pack.actors,
         *pack.speakers,
         *pack.sources,

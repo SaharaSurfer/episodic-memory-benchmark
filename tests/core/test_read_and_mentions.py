@@ -5,7 +5,6 @@ from decimal import Decimal
 import pytest
 
 from mbench.core.folds.graph import Edge, EdgeKind, Graph, fold_trace
-from mbench.core.folds.registry import fold_world
 from mbench.core.legality.predicate import (
     Reason,
     Refusal,
@@ -13,7 +12,9 @@ from mbench.core.legality.predicate import (
 )
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import READ, Disclosure
+from tests.core.records.handmade import disclosure_of
 from tests.core.world import (
+    MISSING,
     OPENED_IN,
     OPENING_RATE,
     WRITES,
@@ -78,7 +79,7 @@ def test_a_mention_is_one_said_in_edge_from_each_value_node() -> None:
 
     world.accept(read(account, 3))
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
     opened = {d.node_id for d in disclosures_in(opening)}
     assert _said_in(graph) == {
         Edge(EdgeKind.SAID_IN, node, 3) for node in opened
@@ -92,21 +93,21 @@ def test_a_second_read_in_the_same_session_adds_nothing() -> None:
     world = World()
     account = world.open()
     world.accept(read(account, 3))
-    once = fold_trace(world.records, LOADED_PACK)
+    once = world.graph
 
     world.accept(read(account, 3))
 
-    assert fold_trace(world.records, LOADED_PACK) == once
+    assert world.graph == once
 
 
 def test_a_read_in_the_session_of_the_write_adds_nothing() -> None:
     world = World()
     account = world.open()
-    written = fold_trace(world.records, LOADED_PACK)
+    written = world.graph
 
     world.accept(read(account, OPENED_IN))
 
-    assert fold_trace(world.records, LOADED_PACK) == written
+    assert world.graph == written
 
 
 def test_a_read_in_a_session_before_the_write_is_no_mention() -> None:
@@ -116,7 +117,7 @@ def test_a_read_in_a_session_before_the_write_is_no_mention() -> None:
 
     world.accept(read(account, 2))
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
     (latest,) = graph.latest((account, RATE))
     assert graph.mentions(latest.id) == frozenset()
 
@@ -127,7 +128,7 @@ def test_reads_in_two_later_sessions_give_two_mentions() -> None:
     world.accept(read(account, 3))
     world.accept(read(account, 5))
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
 
     (node,) = graph.latest((account, RATE))
     assert graph.mentions(node.id) == {3, 5}
@@ -157,7 +158,7 @@ def test_after_a_mutate_a_read_mentions_the_newest_node_only() -> None:
 
     (rate,) = [d for d in disclosures if d.relation == RATE]
     assert rate.value == InterestRate(Decimal("3.90"))
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
     old, new = graph.update_chain((account, RATE))
     assert graph.mentions(new.id) == {3}
     assert graph.mentions(old.id) == frozenset()
@@ -170,7 +171,7 @@ def test_a_read_after_a_return_to_a_value_mentions_the_return() -> None:
     world.accept(change_fee(account, 3, "5"))
     world.accept(read(account, 4))
 
-    graph = fold_trace(world.records, LOADED_PACK)
+    graph = world.graph
 
     first, _, back = graph.update_chain((account, "hasMonthlyFee"))
     assert first.value == back.value
@@ -182,29 +183,20 @@ def test_a_read_of_an_entity_that_does_not_exist_is_refused() -> None:
     world = World()
     world.open()
 
-    outcome = world.decide(read(NodeId("zzzzz"), 3))
+    outcome = world.decide(read(MISSING, 3))
 
     assert outcome == Refusal(1, Reason.REFERENT_MISSING)
 
 
 def _stating(entity: NodeId, rate: str) -> Disclosure:
-    return Disclosure(
-        session=3,
-        source="operator",
-        action_type=READ,
-        initiator="CLIENT",
-        entity=entity,
-        relation=RATE,
-        value=InterestRate(Decimal(rate)),
-        node_id=NodeId("zzzzz"),
-    )
+    return disclosure_of(entity, RATE, InterestRate(Decimal(rate)))
 
 
 def test_a_disclosure_of_the_current_value_is_admitted() -> None:
     world = World()
     account = world.open()
     world.accept(reprice(account, 2, "3.90"))
-    registry = fold_world(world.records, LOADED_PACK)
+    registry = world.registry
 
     disclosure = _stating(account, "3.90")
 
@@ -218,7 +210,7 @@ def test_a_disclosure_of_a_value_not_current_is_refused(rate: str) -> None:
     world = World()
     account = world.open()
     world.accept(reprice(account, 2, "3.90"))
-    registry = fold_world(world.records, LOADED_PACK)
+    registry = world.registry
 
     disclosure = _stating(account, rate)
 
@@ -230,7 +222,7 @@ def test_a_disclosure_of_a_value_not_current_is_refused(rate: str) -> None:
 @pytest.mark.parametrize(
     "missing",
     [
-        lambda account: _stating(NodeId("zzzzz"), OPENING_RATE),
+        lambda account: _stating(MISSING, OPENING_RATE),
         lambda account: replace(
             _stating(account, OPENING_RATE), relation="notARelation"
         ),
@@ -242,7 +234,7 @@ def test_a_disclosure_about_a_pair_the_world_lacks_is_refused(
 ) -> None:
     world = World()
     account = world.open()
-    registry = fold_world(world.records, LOADED_PACK)
+    registry = world.registry
 
     disclosure = missing(account)
 

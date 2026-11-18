@@ -1,15 +1,17 @@
 import ast
+import dataclasses
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from mbench.core.folds.registry import Registry, fold_world
 from mbench.core.legality.predicate import Reason, Refusal, check
-from mbench.core.records.commands import Command
+from mbench.core.records.commands import Command, InitCommand
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import AcceptedCommand, Disclosure, MutateEvent
 from tests.core.world import (
+    MISSING,
     OPENED_IN,
     World,
     change_fee,
@@ -22,12 +24,15 @@ from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import LastFour
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "mbench"
-MISSING = NodeId("zzzzz")
 _OTHER_LAST_FOUR = LastFour("8203")
 
 
-def _registry(world: World) -> Registry:
-    return fold_world(world.records, LOADED_PACK)
+def _init_holding(field: str, given: dict[str, Any]) -> InitCommand:
+    maps: dict[str, Any] = {"writes": {}, field: given}
+
+    return InitCommand(
+        session=OPENED_IN, initiator="CLIENT", action_type="ANY", **maps
+    )
 
 
 @pytest.mark.parametrize(
@@ -46,7 +51,7 @@ def test_the_check_finds_nothing_against_a_legal_command(
     world = World()
     account = world.open()
 
-    assert check(command(account), _registry(world), LOADED_PACK) is None
+    assert check(command(account), world.registry, LOADED_PACK) is None
 
 
 @pytest.mark.parametrize(
@@ -77,7 +82,7 @@ def test_the_check_gives_the_refusal_of_an_illegal_command(
     world = World()
     account = world.open()
 
-    assert check(command(account), _registry(world), LOADED_PACK) == refusal
+    assert check(command(account), world.registry, LOADED_PACK) == refusal
 
 
 def test_decide_pairs_an_accepted_command_with_its_records() -> None:
@@ -93,6 +98,39 @@ def test_decide_pairs_an_accepted_command_with_its_records() -> None:
         MutateEvent,
         Disclosure,
     ]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [open_account(2), change_fee(MISSING, 2, "0"), read(MISSING, 2)],
+    ids=["init", "mutate", "read"],
+)
+def test_a_command_field_cannot_be_reassigned(command: Command) -> None:
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        command.session = 3  # type: ignore[misc]
+
+
+MAPS = pytest.mark.parametrize("field", ["writes", "links", "filters"])
+
+
+@MAPS
+def test_a_commands_maps_cannot_be_changed_through_it(field: str) -> None:
+    command = _init_holding(field, {"key": "before"})
+
+    with pytest.raises(TypeError, match="item assignment"):
+        getattr(command, field)["key"] = "after"
+
+
+@MAPS
+def test_a_command_keeps_its_maps_when_the_given_one_changes(
+    field: str,
+) -> None:
+    given = {"key": "before"}
+    command = _init_holding(field, given)
+
+    given["key"] = "after"
+
+    assert getattr(command, field) == {"key": "before"}
 
 
 def _names_accepted_command(called: ast.expr) -> bool:

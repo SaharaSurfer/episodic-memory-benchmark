@@ -5,9 +5,6 @@ from mbench.core.records.frozen import freeze
 from mbench.core.records.ids import NodeId
 from mbench.core.values.protocol import ValueClass
 
-# The values an endpoint must hold, per relation, for the command to pick it.
-type Filter = Mapping[str, frozenset[ValueClass]]
-
 
 @dataclass(frozen=True)
 class InitCommand:
@@ -20,20 +17,16 @@ class InitCommand:
     # None leaves the source of its disclosures to the default.
     source: str | None = None
     links: Mapping[str, NodeId] = field(default_factory=lambda: freeze({}))
-    # A condition per link endpoint, beside the ActionType's gate, that the
-    # caller sets: which entity it may pick, not what the action allows.
-    filters: Mapping[str, Filter] = field(default_factory=lambda: freeze({}))
+    # The name of the pack's role filter per link endpoint, beside the
+    # ActionType's gate: which entity may be picked, not what the action allows.
+    filters: Mapping[str, str] = field(default_factory=lambda: freeze({}))
 
     def __post_init__(self) -> None:
         """Hold the writes, links and filters read-only."""
 
         object.__setattr__(self, "writes", freeze(self.writes))
         object.__setattr__(self, "links", freeze(self.links))
-        object.__setattr__(
-            self,
-            "filters",
-            freeze({link: freeze(cond) for link, cond in self.filters.items()}),
-        )
+        object.__setattr__(self, "filters", freeze(self.filters))
 
 
 @dataclass(frozen=True)
