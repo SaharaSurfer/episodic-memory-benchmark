@@ -27,6 +27,8 @@ from mbench.core.records.log import (
 from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
+    ByType,
+    Copy,
     Gate,
     InitAction,
     Linker,
@@ -103,9 +105,10 @@ def check(
     writes = _world_writes(command, pack)
     _check_links(command, pack)
     _check_fixed_values(command, pack)
+    _check_no_derived_writes(command, pack)
     _check_sources(command, pack)
 
-    return (
+    refusal = (
         refuse_unfit_referent(command, registry, pack)
         or refuse_unfit_endpoints(command, registry, pack)
         or refuse_second_write(command, writes, registry)
@@ -116,6 +119,10 @@ def check(
         or refuse_anchor_same_zone(command, registry, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
+    if refusal is None:
+        _check_derivations(command, registry, pack)
+
+    return refusal
 
 
 def _build_records(
@@ -137,7 +144,7 @@ def _build_records(
 
     source = default_source(command, pack)
     if isinstance(command, InitCommand):
-        return _init_records(command, source, allocator)
+        return _init_records(command, source, registry, pack, allocator)
 
     return _mutate_records(
         command, _plain_writes(command, pack), (source,), allocator
@@ -263,11 +270,20 @@ def refuse_invalid_values(
     relations = pack.entity_types[entity_type].relations
 
     for relation, value in _stated_values(command, pack):
-        cls = relations.get(relation)
-        if cls is None or not isinstance(value, cls) or not value.is_valid():
+        if not _fits(relations, relation, value):
             return Refusal(3, Reason.INVALID_VALUE)
 
     return None
+
+
+def _fits(
+    relations: Mapping[str, type[ValueClass]], relation: str, value: ValueClass
+) -> bool:
+    """Whether the relation is declared and its class holds the value."""
+
+    cls = relations.get(relation)
+
+    return cls is not None and isinstance(value, cls) and value.is_valid()
 
 
 def refuse_illegal_contest(
@@ -382,7 +398,7 @@ def refuse_sealed_entity(
 def _init_relies_on_conflict(
     command: InitCommand, registry: Registry, pack: LoadedPack
 ) -> bool:
-    """Whether an endpoint is sealed, or its filter reads a contested status."""
+    """Whether a link's target is sealed, or a filter reads a conflict."""
 
     for link, endpoint in command.links.items():
         entry = registry.entry(endpoint)
@@ -400,7 +416,20 @@ def _init_relies_on_conflict(
         ):
             return True
 
-    return False
+    return any(
+        _entity_is_sealed(_linked_entry(target, registry), pack)
+        for target in _copied_links(command, registry, pack).values()
+    )
+
+
+def _linked_entry(target: NodeId, registry: Registry) -> Entry:
+    """The entity a stored link points at."""
+
+    entry = registry.entry(target)
+    # A link is stored only once its target has passed the endpoint clause.
+    assert entry is not None
+
+    return entry
 
 
 def _entity_is_sealed(entry: Entry, pack: LoadedPack) -> bool:
@@ -463,12 +492,13 @@ def refuse_anchor_same_zone(
     if not entity_type.anchor:
         return None
 
+    writes = _init_writes(command, registry, pack)
+
     # Closed entities count too: a question may name one, so its anchor
     # must still pick it out alone.
     for entry in registry.entries():
         if entry.type == entity_type.name and all(
-            _same_part(command.writes, entry, part)
-            for part in entity_type.anchor
+            _same_part(writes, entry, part) for part in entity_type.anchor
         ):
             return Refusal(7, Reason.ANCHOR_SAME_ZONE)
 
@@ -593,6 +623,69 @@ def _stated_values(
     return tuple(_plain_writes(command, pack).items())
 
 
+def _init_writes(
+    command: InitCommand, registry: Registry, pack: LoadedPack
+) -> dict[str, ValueClass]:
+    """The values an INIT's event will write: its own and its derived ones."""
+
+    return {**command.writes, **_derived_values(command, registry, pack)}
+
+
+def _derived_values(
+    command: InitCommand, registry: Registry, pack: LoadedPack
+) -> dict[str, ValueClass]:
+    """The values the INIT's derivations give, skipping any with no answer."""
+
+    # Clauses, and the factory, ask before every endpoint is known good, so
+    # a derivation may have nothing to read yet. `check` holds the final say.
+    derived = {}
+
+    for relation, derivation in _init_action(command, pack).derives.items():
+        source = _derivation_source(derivation.via, command, registry)
+        value = None if source is None else _derive(derivation, source)
+        if value is not None and not isinstance(value, Contested):
+            derived[relation] = value
+
+    return derived
+
+
+def _derive(derivation: Copy | ByType, source: Entry) -> WorldValue | None:
+    """The value the derivation reads off its source entity, if any."""
+
+    if isinstance(derivation, ByType):
+        return derivation.values.get(source.type)
+
+    stamped = source.values.get(derivation.relation)
+
+    return None if stamped is None else stamped.value
+
+
+def _copied_links(
+    command: InitCommand, registry: Registry, pack: LoadedPack
+) -> dict[str, NodeId]:
+    """The links the INIT copies, skipping any with nothing to copy."""
+
+    copied = {}
+
+    for link, derivation in _init_action(command, pack).copied_links.items():
+        source = _derivation_source(derivation.via, command, registry)
+        target = None if source is None else source.links.get(derivation.link)
+        if target is not None:
+            copied[link] = target
+
+    return copied
+
+
+def _derivation_source(
+    via: str, command: InitCommand, registry: Registry
+) -> Entry | None:
+    """The entity the command's link reaches, if it names one that exists."""
+
+    endpoint = command.links.get(via)
+
+    return None if endpoint is None else registry.entry(endpoint)
+
+
 def _plain_writes(
     command: InitCommand | MutateCommand | AgreeingDoubleDisclosureCommand,
     pack: LoadedPack,
@@ -621,10 +714,10 @@ def _check_links(command: EventCommand, pack: LoadedPack) -> None:
     action = _init_action(command, pack)
 
     # Like a command of the wrong shape: the caller fills every link the
-    # INIT writes, and a link it lacks or does not write is its bug.
+    # INIT does not copy, and a link it lacks or may not name is its bug.
     if command.links.keys() != action.links.keys():
         raise ValueError(
-            f"{action.name} writes links {sorted(action.links)},"
+            f"{action.name} takes links {sorted(action.links)},"
             f" not {sorted(command.links)}"
         )
     if not command.filters.keys() <= action.links.keys():
@@ -660,6 +753,52 @@ def _check_fixed_values(command: EventCommand, pack: LoadedPack) -> None:
         raise ValueError(
             f"{action.name} fixes {sorted(wrong)}, the command differs"
         )
+
+
+def _check_no_derived_writes(command: EventCommand, pack: LoadedPack) -> None:
+    """Raise if an INIT names a value its ActionType derives."""
+
+    if not isinstance(command, InitCommand):
+        return
+
+    action = _init_action(command, pack)
+
+    named = command.writes.keys() & action.derives.keys()
+    if named:
+        raise ValueError(
+            f"{action.name} derives {sorted(named)}, not the command"
+        )
+
+
+def _check_derivations(
+    command: EventCommand, registry: Registry, pack: LoadedPack
+) -> None:
+    """Raise if a legal INIT has a derivation with no fitting answer."""
+
+    if not isinstance(command, InitCommand):
+        return
+
+    action = _init_action(command, pack)
+    derived = _derived_values(command, registry, pack)
+
+    # The clauses have passed, so the sources exist and none is sealed. What
+    # is left is a recipe that cannot work, or a read `derivation_reads` omits:
+    # the pack's bug, and an entity missing the value would break later reads.
+    unanswered = (action.derives.keys() | action.copied_links.keys()) - (
+        derived.keys() | _copied_links(command, registry, pack).keys()
+    )
+    if unanswered:
+        raise LookupError(f"{action.name} cannot derive {sorted(unanswered)}")
+
+    # The pack chose these values, so no command is to blame for a bad one.
+    relations = pack.entity_types[action.referent_type].relations
+    unfit = [
+        relation
+        for relation, value in derived.items()
+        if not _fits(relations, relation, value)
+    ]
+    if unfit:
+        raise ValueError(f"{action.name} derives unfit {sorted(unfit)}")
 
 
 def _check_sources(command: EventCommand, pack: LoadedPack) -> None:
@@ -778,7 +917,11 @@ def _linkers(
 
 
 def _init_records(
-    command: InitCommand, source: str, allocator: IdAllocator
+    command: InitCommand,
+    source: str,
+    registry: Registry,
+    pack: LoadedPack,
+    allocator: IdAllocator,
 ) -> tuple[Record, ...]:
     """The INIT event, then a default disclosure per value and link."""
 
@@ -787,8 +930,8 @@ def _init_records(
         initiator=command.initiator,
         action_type=command.action_type,
         new_id=allocator.allocate(),
-        writes=command.writes,
-        links=command.links,
+        writes=_init_writes(command, registry, pack),
+        links={**command.links, **_copied_links(command, registry, pack)},
     )
 
     links = {link: Link(target) for link, target in event.links.items()}

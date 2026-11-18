@@ -100,12 +100,41 @@ class EntityType:
 
 
 @dataclass(frozen=True)
+class Copy:
+    """A first value copied from the entity one of the INIT's links reaches."""
+
+    via: str
+    relation: str
+
+
+@dataclass(frozen=True)
+class ByType:
+    """A first value chosen by the type of the entity a link reaches."""
+
+    via: str
+    values: Mapping[str, ValueClass]
+
+    def __post_init__(self) -> None:
+        """Hold the values read-only."""
+
+        object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
+
+
+@dataclass(frozen=True)
+class CopyLink:
+    """A structural link copied from the entity a link of the INIT reaches."""
+
+    via: str
+    link: str
+
+
+@dataclass(frozen=True)
 class InitAction:
     """An ActionType that creates an entity of its referent type."""
 
     name: str
     referent_type: str
-    # The links the INIT writes, each with the gate its endpoint must pass.
+    # The links the command names, each with the gate its endpoint must pass.
     links: Mapping[str, Gate] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -114,12 +143,24 @@ class InitAction:
     fixes: Mapping[str, ValueClass] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # The values computed from the linked entities when the INIT is decided,
+    # so a command never carries them.
+    derives: Mapping[str, Copy | ByType] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    # The links computed the same way, which a command does not name.
+    copied_links: Mapping[str, CopyLink] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
-        """Hold the links, their gates and the fixed values read-only."""
+        """Hold the links, their gates and the INIT's recipe read-only."""
 
         object.__setattr__(self, "links", _frozen_gates(self.links))
-        object.__setattr__(self, "fixes", MappingProxyType(dict(self.fixes)))
+        for table in ("fixes", "derives", "copied_links"):
+            object.__setattr__(
+                self, table, MappingProxyType(dict(getattr(self, table)))
+            )
 
 
 @dataclass(frozen=True)

@@ -38,7 +38,6 @@ from tests.testpack.values import (
     ACTIVE,
     INACTIVE,
     OPEN,
-    CardType,
     CaseKind,
     DepositKind,
     InterestRate,
@@ -53,7 +52,9 @@ OPENED_IN = 1
 OPENING_RATE = "4.25"
 ISSUED_IN = 2
 REPORTED_IN = 3
+REPLACED_IN = 4
 CARD_LINK = "hasCorrespondingAccount"
+REPLACES = "replaces"
 CASE_LINK = "isAbout"
 FEE = "hasMonthlyFee"
 
@@ -81,12 +82,20 @@ WRITES: Mapping[str, ValueClass] = MappingProxyType(
     }
 )
 
-# Read-only for the same reason. The card type is written by hand here, though
-# the pack will derive it from the account.
+# Read-only for the same reason. The card type is left out, as the pack derives
+# it from the account.
 CARD_WRITES: Mapping[str, ValueClass] = MappingProxyType(
     {
-        "cardType": CardType("debit"),
         "lastFour": LastFour("9012"),
+        "hasStatus": INACTIVE,
+    }
+)
+
+# Read-only for the same reason. Its last four differ from CARD_WRITES', so a
+# replacement, sharing its card's type, keeps an anchor of its own.
+REPLACEMENT_WRITES: Mapping[str, ValueClass] = MappingProxyType(
+    {
+        "lastFour": LastFour("5577"),
         "hasStatus": INACTIVE,
     }
 )
@@ -165,6 +174,11 @@ class World:
 
         return created_id(self.accept(issue(account, ISSUED_IN)))
 
+    def replace_card(self, card: NodeId) -> NodeId:
+        """Issue a replacement of the card, and give its id."""
+
+        return created_id(self.accept(replacement(card, REPLACED_IN)))
+
     def open_case(self, card: NodeId | None = None) -> NodeId:
         """Report fraud on the card, else a new one, give the case's id."""
 
@@ -226,6 +240,19 @@ def issue(account: NodeId, session: int) -> InitCommand:
         source="operator",
         writes=CARD_WRITES,
         links={CARD_LINK: account},
+    )
+
+
+def replacement(card: NodeId, session: int) -> InitCommand:
+    """A command issuing a replacement of the card."""
+
+    return InitCommand(
+        session=session,
+        initiator="BANK",
+        action_type="ISSUE_REPLACEMENT_CARD",
+        source="operator",
+        writes=REPLACEMENT_WRITES,
+        links={REPLACES: card},
     )
 
 

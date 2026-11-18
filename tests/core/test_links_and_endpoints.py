@@ -45,6 +45,7 @@ from tests.testpack.pack import (
 from tests.testpack.values import (
     ACTIVE,
     INACTIVE,
+    CardType,
     DepositKind,
     LastFour,
     MonetaryAmount,
@@ -95,7 +96,7 @@ def test_the_init_event_carries_its_links_beside_its_values() -> None:
 
     assert isinstance(event, InitEvent)
     assert event.links == {CARD_LINK: account}
-    assert event.writes == CARD_WRITES
+    assert event.writes == {**CARD_WRITES, "cardType": CardType("debit")}
 
 
 def test_an_init_discloses_its_link_by_default() -> None:

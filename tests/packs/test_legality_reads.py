@@ -34,11 +34,13 @@ def test_a_type_without_a_status_lists_nothing_of_its_own() -> None:
 
 
 def test_the_relations_role_filters_read_are_listed_on_their_types() -> None:
-    assert LOADED_PACK.relations_legality_reads(DEPOSIT_ACCOUNT.name) == {
+    pack = replace(LOADED_PACK, derivation_reads={})
+
+    assert pack.relations_legality_reads(DEPOSIT_ACCOUNT.name) == {
         "hasStatus",
         "kind",
     }
-    assert LOADED_PACK.relations_legality_reads(PAYMENT_CARD.name) == {
+    assert pack.relations_legality_reads(PAYMENT_CARD.name) == {
         "hasStatus",
         "hasCorrespondingAccount",
     }

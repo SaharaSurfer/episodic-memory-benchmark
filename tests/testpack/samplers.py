@@ -50,6 +50,7 @@ INIT_SAMPLERS: Mapping[tuple[str, str], Sampler[Any]] = {
     ),
     ("OPEN_DEPOSIT_ACCOUNT", "hasMonthlyFee"): MONTHLY_FEES,
     ("ISSUE_CARD", "lastFour"): ANY_LAST_FOUR,
+    ("ISSUE_REPLACEMENT_CARD", "lastFour"): ANY_LAST_FOUR,
     ("REPORT_FRAUD", "caseNumber"): CASE_NUMBERS,
     ("REQUEST_CARD", "caseNumber"): CASE_NUMBERS,
 }

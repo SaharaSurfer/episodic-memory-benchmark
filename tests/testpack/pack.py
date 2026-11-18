@@ -1,5 +1,8 @@
 from mbench.packs.spec import (
     Actor,
+    ByType,
+    Copy,
+    CopyLink,
     EntityType,
     Framing,
     InitAction,
@@ -53,7 +56,10 @@ PAYMENT_CARD = EntityType(
     },
     status="hasStatus",
     terminal=frozenset({LifecycleStatus("closed")}),
-    links={"hasCorrespondingAccount": frozenset({DEPOSIT_ACCOUNT.name})},
+    links={
+        "hasCorrespondingAccount": frozenset({DEPOSIT_ACCOUNT.name}),
+        "replaces": frozenset({"PAYMENT_CARD"}),
+    },
     anchor=("cardType", "lastFour"),
     nameable=True,
 )
@@ -174,6 +180,7 @@ FRAMINGS = {
     "OPEN_DEPOSIT_ACCOUNT": (_CLIENT_STATES,),
     # The bank issues on its own, or the client asks and the operator says so.
     "ISSUE_CARD": (_BANK_STATES, Framing(CLIENT.name, "operator")),
+    "ISSUE_REPLACEMENT_CARD": (_BANK_STATES,),
     "REPRICE_DEPOSIT_ACCOUNT": (_BANK_WRITES,),
     "CHANGE_ACCOUNT_FEE": (_BANK_WRITES,),
     "FREEZE_DEPOSIT_ACCOUNT": (_BANK_STATES,),
@@ -212,6 +219,25 @@ LOADED_PACK = LoadedPack(
             referent_type=PAYMENT_CARD.name,
             links={"hasCorrespondingAccount": {}},
             fixes={"hasStatus": INACTIVE},
+            derives={
+                "cardType": ByType(
+                    "hasCorrespondingAccount",
+                    {DEPOSIT_ACCOUNT.name: CardType("debit")},
+                )
+            },
+        ),
+        # The card replaced may be closed, so its endpoint has no gate either.
+        "ISSUE_REPLACEMENT_CARD": InitAction(
+            "ISSUE_REPLACEMENT_CARD",
+            referent_type=PAYMENT_CARD.name,
+            links={"replaces": {}},
+            fixes={"hasStatus": INACTIVE},
+            derives={"cardType": Copy("replaces", "cardType")},
+            copied_links={
+                "hasCorrespondingAccount": CopyLink(
+                    "replaces", "hasCorrespondingAccount"
+                )
+            },
         ),
         # What a case is about is the role filter's to narrow, if any.
         "REPORT_FRAUD": InitAction(
@@ -246,6 +272,7 @@ LOADED_PACK = LoadedPack(
         role_filter.name: role_filter for role_filter in ROLE_FILTERS
     },
     framings=FRAMINGS,
+    derivation_reads={PAYMENT_CARD.name: frozenset({"cardType"})},
     pools=POOLS,
     init_samplers=INIT_SAMPLERS,
     step_samplers=STEP_SAMPLERS,
