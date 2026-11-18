@@ -23,7 +23,7 @@ from mbench.core.records.log import (
     Record,
 )
 from mbench.core.values.protocol import ValueClass
-from mbench.packs.spec import Framing, LoadedPack
+from mbench.packs.spec import Framing, Gate, LoadedPack, MutateAction
 from tests.core.records.handmade import OPEN_ACCOUNT
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
@@ -287,6 +287,16 @@ def with_framings(**framings: tuple[Framing, ...]) -> LoadedPack:
 BANK_MAY_CLOSE = with_framings(
     CLOSE_DEPOSIT_ACCOUNT=(Framing("BANK", "letter"),)
 )
+
+
+def with_gate(pack: LoadedPack, name: str, gate: Gate) -> LoadedPack:
+    """The pack with the named ActionType's gate extended."""
+
+    action = pack.action_types[name]
+    assert isinstance(action, MutateAction)
+    gated = replace(action, gate={**action.gate, **gate})
+
+    return replace(pack, action_types={**pack.action_types, name: gated})
 
 
 def move(referent: NodeId, session: int, action_type: str) -> MutateCommand:

@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
@@ -27,6 +27,7 @@ from mbench.core.records.log import (
 from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
+    ActionType,
     Gate,
     InitAction,
     Linker,
@@ -59,6 +60,7 @@ class Reason(Enum):
     WRITER_GATE_FAILED = "writer_gate_failed"
     NO_CONTESTABLE_FRAMING = "no_contestable_framing"
     INITIATOR_NOT_SHARED = "initiator_not_shared"
+    PAIR_SEALED = "pair_sealed"
     ANCHOR_SAME_ZONE = "anchor_same_zone"
     UNCHANGED_VALUE = "unchanged_value"
 
@@ -94,7 +96,9 @@ def check(
     """Why the command is illegal at this registry, if it is."""
 
     if isinstance(command, ReadCommand):
-        return refuse_missing_entity(command, registry)
+        return refuse_missing_entity(command, registry) or refuse_sealed_read(
+            command, registry
+        )
 
     writes = _world_writes(command, pack)
     _check_links(command, pack)
@@ -106,6 +110,7 @@ def check(
         or refuse_second_write(command, writes, registry)
         or refuse_invalid_values(command, registry, pack)
         or refuse_illegal_contest(command, registry, pack)
+        or refuse_sealed_write(command, writes, registry)
         or refuse_anchor_same_zone(command, registry, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
@@ -181,7 +186,7 @@ def refuse_unfit_referent(
         return Refusal(1, Reason.REFERENT_WRONG_TYPE)
 
     gate = action.gate if isinstance(action, MutateAction) else {}
-    if not _passes(entry, gate):
+    if not _passes(entry, _judgeable_gate(gate, entry, action)):
         return Refusal(1, Reason.GATE_FAILED)
 
     # A gate that reads the status has named the statuses it admits, a
@@ -191,6 +196,18 @@ def refuse_unfit_referent(
         return Refusal(1, Reason.NOT_LIVE)
 
     return None
+
+
+def _judgeable_gate(gate: Gate, entry: Entry, action: ActionType) -> Gate:
+    """The gate, less the pair the action writes if that pair is contested."""
+
+    # A gate cannot judge a conflict, and sealing refuses the write to it.
+    if isinstance(action, MutateAction) and _is_contested(
+        entry, action.relation
+    ):
+        return {r: v for r, v in gate.items() if r != action.relation}
+
+    return gate
 
 
 def refuse_unfit_endpoints(
@@ -307,9 +324,8 @@ def _refuse_contest_writers(
     """Refuse values no pair of unstated, co-initiated ActionTypes writes."""
 
     # Nothing can write from a conflict, but that is not why a pair already
-    # contested stays closed, so this clause does not give the refusal.
-    current = entry.values.get(command.relation)
-    if current is not None and isinstance(current.value, Contested):
+    # contested stays closed: sealing gives that refusal.
+    if _is_contested(entry, command.relation):
         return None
 
     writers = []
@@ -347,6 +363,44 @@ def _refuse_contest_sources(
         return Refusal(5, Reason.SPEAKER_TWICE)
 
     return None
+
+
+def refuse_sealed_write(
+    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
+) -> Refusal | None:
+    """Refuse a write to a pair holding a contested value."""
+
+    return _refuse_sealed(_current(command, writes, registry).values())
+
+
+def refuse_sealed_read(
+    command: ReadCommand, registry: Registry
+) -> Refusal | None:
+    """Refuse a READ of an entity holding a contested value."""
+
+    entry = registry.entry(command.entity)
+    # The existence check runs first and has refused a missing entity.
+    assert entry is not None
+
+    # A READ states every value of its entity, so one contested pair is enough.
+    return _refuse_sealed(entry.values.values())
+
+
+def _refuse_sealed(values: Iterable[Stamped]) -> Refusal | None:
+    """Refuse a command touching these values if any is contested."""
+
+    if any(isinstance(current.value, Contested) for current in values):
+        return Refusal(6, Reason.PAIR_SEALED)
+
+    return None
+
+
+def _is_contested(entry: Entry, relation: str) -> bool:
+    """Whether the entity's pair for the relation holds a contested value."""
+
+    current = entry.values.get(relation)
+
+    return current is not None and isinstance(current.value, Contested)
 
 
 def refuse_anchor_same_zone(
@@ -731,14 +785,11 @@ def _contest_records(
 def _writer(
     entry: Entry, relation: str, value: ValueClass, pack: LoadedPack
 ) -> MutateAction:
-    """The ActionType that writes the value, raising if none does."""
+    """The ActionType that writes the value, which the check has ensured."""
 
     action = _find_writer(entry, relation, value, pack)
-
-    # Only a pair already contested gets here, and a disclosure cannot go
-    # unframed.
-    if action is None:
-        raise LookupError(f"no ActionType writes {value} to {relation}")
+    # The check has refused a value with no writer, and a sealed pair.
+    assert action is not None
 
     return action
 
@@ -809,8 +860,7 @@ def _read_records(
 def _readable(current: WorldValue) -> ValueClass:
     """The value a READ states, which a conflict, having no truth, is not."""
 
-    # The check lets this through, but a disclosure states one plain value.
-    if isinstance(current, Contested):
-        raise ValueError("a contested value cannot be read")
+    # The check has refused a READ of an entity holding a conflict.
+    assert not isinstance(current, Contested)
 
     return current

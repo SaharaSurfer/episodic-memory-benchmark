@@ -2,20 +2,9 @@ from dataclasses import replace
 
 import pytest
 
-from mbench.core.legality.predicate import (
-    Reason,
-    Refusal,
-    refuse_illegal_contest,
-)
+from mbench.core.legality.predicate import Reason, Refusal
 from mbench.core.records.log import MutateEvent
-from mbench.packs.spec import (
-    Framing,
-    Gate,
-    LoadedPack,
-    MutateAction,
-    Source,
-    SourceKind,
-)
+from mbench.packs.spec import Framing, Gate, Source, SourceKind
 from tests.core.world import (
     BANK_MAY_CLOSE,
     OPENING_RATE,
@@ -25,6 +14,7 @@ from tests.core.world import (
     reprice,
     status_contest,
     with_framings,
+    with_gate,
 )
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
@@ -120,16 +110,6 @@ def test_a_value_only_an_earlier_version_held_is_not_refused_here() -> None:
     assert not isinstance(outcome, Refusal)
 
 
-def _with_gate(pack: LoadedPack, name: str, gate: Gate) -> LoadedPack:
-    """The pack with the named ActionType's gate extended."""
-
-    action = pack.action_types[name]
-    assert isinstance(action, MutateAction)
-    gated = replace(action, gate={**action.gate, **gate})
-
-    return replace(pack, action_types={**pack.action_types, name: gated})
-
-
 CHECKING_ONLY: Gate = {"kind": frozenset({DepositKind("checking")})}
 
 
@@ -162,7 +142,7 @@ def test_a_pair_holding_no_value_has_nothing_to_write_from() -> None:
 def test_a_value_whose_action_fails_its_gate_is_refused(
     a: LifecycleStatus, b: LifecycleStatus
 ) -> None:
-    pack = _with_gate(BANK_MAY_CLOSE, "FREEZE_DEPOSIT_ACCOUNT", CHECKING_ONLY)
+    pack = with_gate(BANK_MAY_CLOSE, "FREEZE_DEPOSIT_ACCOUNT", CHECKING_ONLY)
     world = World(pack)
     account = world.open()
 
@@ -172,7 +152,7 @@ def test_a_value_whose_action_fails_its_gate_is_refused(
 
 
 def test_a_value_whose_action_passes_its_gate_is_accepted() -> None:
-    pack = _with_gate(BANK_MAY_CLOSE, "FREEZE_DEPOSIT_ACCOUNT", CHECKING_ONLY)
+    pack = with_gate(BANK_MAY_CLOSE, "FREEZE_DEPOSIT_ACCOUNT", CHECKING_ONLY)
     world = World(pack)
     account = world.open(kind=DepositKind("checking"))
 
@@ -250,12 +230,3 @@ def test_the_event_and_disclosures_take_the_shared_initiator_named(
     assert isinstance(event, MutateEvent)
     assert event.initiator == initiator
     assert {d.initiator for d in disclosures_in(records)} == {initiator}
-
-
-def test_this_clause_does_not_refuse_a_pair_already_contested() -> None:
-    world = World()
-    account = world.open()
-    world.accept(contest(account, CONTESTED_IN, A, B))
-    again = contest(account, CONTESTED_IN + 1, REPRICED, OPENING_RATE)
-
-    assert refuse_illegal_contest(again, world.registry, world.pack) is None
