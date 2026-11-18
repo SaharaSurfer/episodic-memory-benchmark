@@ -53,5 +53,20 @@ class ReadCommand:
     entity: NodeId
 
 
-type EventCommand = InitCommand | MutateCommand
+@dataclass(frozen=True)
+class AgreeingDoubleDisclosureCommand:
+    """A request to write one value that two sources both disclose."""
+
+    session: int
+    initiator: str
+    action_type: str
+    referent: NodeId
+    # Always named, so a status action, which fixes its value, cannot take it.
+    value: ValueClass
+    sources: tuple[str, str]
+
+
+type EventCommand = (
+    InitCommand | MutateCommand | AgreeingDoubleDisclosureCommand
+)
 type Command = EventCommand | ReadCommand

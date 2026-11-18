@@ -7,6 +7,7 @@ from mbench.core.folds.graph import Graph, fold_trace
 from mbench.core.folds.registry import Registry, fold_world
 from mbench.core.legality.predicate import Refusal, decide
 from mbench.core.records.commands import (
+    AgreeingDoubleDisclosureCommand,
     Command,
     InitCommand,
     MutateCommand,
@@ -216,6 +217,24 @@ def reprice(referent: NodeId, session: int, rate: str) -> MutateCommand:
         source="letter",
         referent=referent,
         value=InterestRate(Decimal(rate)),
+    )
+
+
+def agree(
+    referent: NodeId,
+    session: int,
+    rate: str,
+    sources: tuple[str, str] = ("letter", "app_notification"),
+) -> AgreeingDoubleDisclosureCommand:
+    """A command in which two sources both state the account's new rate."""
+
+    return AgreeingDoubleDisclosureCommand(
+        session=session,
+        initiator="BANK",
+        action_type="REPRICE_DEPOSIT_ACCOUNT",
+        referent=referent,
+        value=InterestRate(Decimal(rate)),
+        sources=sources,
     )
 
 

@@ -4,6 +4,7 @@ from enum import Enum
 
 from mbench.core.folds.registry import Entry, Registry, Stamped, is_live
 from mbench.core.records.commands import (
+    AgreeingDoubleDisclosureCommand,
     Command,
     EventCommand,
     InitCommand,
@@ -86,6 +87,7 @@ def check(
 
     writes = _writes(command, pack)
     _check_links(command, pack)
+    _check_sources(command, pack)
 
     return (
         refuse_unfit_referent(command, registry, pack)
@@ -107,15 +109,23 @@ def _build_records(
 
     if isinstance(command, ReadCommand):
         return _read_records(command, registry, allocator)
+    if isinstance(command, AgreeingDoubleDisclosureCommand):
+        return _mutate_records(
+            command, _writes(command, pack), command.sources, allocator
+        )
 
     source = default_source(command, pack)
     if isinstance(command, InitCommand):
         return _init_records(command, source, allocator)
 
-    return _mutate_records(command, _writes(command, pack), source, allocator)
+    return _mutate_records(
+        command, _writes(command, pack), (source,), allocator
+    )
 
 
-def default_source(command: EventCommand, pack: LoadedPack) -> str:
+def default_source(
+    command: InitCommand | MutateCommand, pack: LoadedPack
+) -> str:
     """The source named, else the initiator's speaker, else a document."""
 
     if command.source is not None:
@@ -141,7 +151,7 @@ def refuse_unfit_referent(
     """Refuse a MUTATE on a missing, mistyped, gated-out or dead referent."""
 
     # An INIT has no referent, only link endpoints, checked on their own.
-    if not isinstance(command, MutateCommand):
+    if isinstance(command, InitCommand):
         return None
 
     action = pack.action_types[command.action_type]
@@ -321,7 +331,7 @@ def _current(
     """The current stamped value of each pair the command writes, if any."""
 
     # An INIT writes a new entity, whose pairs hold nothing yet.
-    if not isinstance(command, MutateCommand):
+    if isinstance(command, InitCommand):
         return {}
 
     entry = registry.entry(command.referent)
@@ -343,7 +353,9 @@ def _writes(
     action = pack.action_types[command.action_type]
     if isinstance(command, InitCommand) and isinstance(action, InitAction):
         return command.writes
-    if isinstance(command, MutateCommand) and isinstance(action, MutateAction):
+    if not isinstance(command, InitCommand) and isinstance(
+        action, MutateAction
+    ):
         return {action.relation: _written_value(command, action)}
 
     # A command naming an ActionType of the other shape is a caller's bug,
@@ -380,6 +392,23 @@ def _check_links(command: EventCommand, pack: LoadedPack) -> None:
         )
 
 
+def _check_sources(command: EventCommand, pack: LoadedPack) -> None:
+    """Raise unless a double disclosure names two declared sources."""
+
+    if not isinstance(command, AgreeingDoubleDisclosureCommand):
+        return
+
+    # No clause covers the sources a command names, so a wrong pair is the
+    # caller's bug, raised rather than refused.
+    first, second = command.sources
+    if first == second:
+        raise ValueError(f"{first} is named twice, not two different sources")
+
+    unknown = set(command.sources) - pack.sources.keys()
+    if unknown:
+        raise ValueError(f"the pack declares no source {sorted(unknown)}")
+
+
 def _init_action(command: InitCommand, pack: LoadedPack) -> InitAction:
     """The INIT ActionType the command names, its shape already checked."""
 
@@ -390,8 +419,20 @@ def _init_action(command: InitCommand, pack: LoadedPack) -> InitAction:
     return action
 
 
-def _written_value(command: MutateCommand, action: MutateAction) -> ValueClass:
+def _written_value(
+    command: MutateCommand | AgreeingDoubleDisclosureCommand,
+    action: MutateAction,
+) -> ValueClass:
     """The value a MUTATE writes: its status action's, else the command's."""
+
+    # Its value is always named, so it never leaves one for the action to fix.
+    if (
+        isinstance(command, AgreeingDoubleDisclosureCommand)
+        and action.fixes is not None
+    ):
+        raise TypeError(
+            f"a double disclosure cannot take status action {action.name}"
+        )
 
     if action.fixes is not None and command.value is None:
         return action.fixes
@@ -469,12 +510,12 @@ def _init_records(
 
 
 def _mutate_records(
-    command: MutateCommand,
+    command: MutateCommand | AgreeingDoubleDisclosureCommand,
     writes: Mapping[str, ValueClass],
-    source: str,
+    sources: tuple[str, ...],
     allocator: IdAllocator,
 ) -> tuple[Record, ...]:
-    """The MUTATE event, then the default disclosure of its one value."""
+    """The MUTATE event, then one disclosure of its value per source."""
 
     event = MutateEvent(
         session=command.session,
@@ -486,7 +527,13 @@ def _mutate_records(
 
     return (
         event,
-        *_disclosures(event, event.referent, event.writes, source, allocator),
+        *(
+            disclosure
+            for source in sources
+            for disclosure in _disclosures(
+                event, event.referent, event.writes, source, allocator
+            )
+        ),
     )
 
 
