@@ -12,13 +12,14 @@ from mbench.core.legality.predicate import (
     refuse_untrue_disclosure,
 )
 from mbench.core.records.ids import NodeId
-from mbench.core.records.log import READ, Disclosure, Record
+from mbench.core.records.log import READ, Disclosure
 from tests.core.world import (
     OPENED_IN,
     OPENING_RATE,
     WRITES,
     World,
     change_fee,
+    disclosures_in,
     read,
     reprice,
 )
@@ -26,10 +27,6 @@ from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import InterestRate
 
 RATE = "hasInterestRate"
-
-
-def _disclosures(records: tuple[Record, ...]) -> list[Disclosure]:
-    return [r for r in records if isinstance(r, Disclosure)]
 
 
 def _said_in(graph: Graph) -> set[Edge]:
@@ -42,7 +39,7 @@ def test_a_read_gives_one_disclosure_per_current_value_and_no_event() -> None:
 
     records = world.accept(read(account, 3))
 
-    disclosures = _disclosures(records)
+    disclosures = disclosures_in(records)
     assert len(disclosures) == len(records)
     assert {(d.relation, d.value) for d in disclosures} == set(WRITES.items())
     assert len(disclosures) == len(WRITES)
@@ -53,7 +50,7 @@ def test_a_read_is_framed_read_with_the_initiator_and_source_it_names() -> None:
     account = world.open()
     command = replace(read(account, 3), initiator="BANK", source="letter")
 
-    disclosures = _disclosures(world.accept(command))
+    disclosures = disclosures_in(world.accept(command))
 
     assert {
         (d.session, d.source, d.action_type, d.initiator, d.entity)
@@ -64,25 +61,13 @@ def test_a_read_is_framed_read_with_the_initiator_and_source_it_names() -> None:
 def test_every_read_disclosure_carries_a_fresh_node_id() -> None:
     world = World()
     account = world.open()
-    used = {account} | {d.node_id for d in _disclosures(world.records)}
+    used = {account} | {d.node_id for d in disclosures_in(world.records)}
 
-    disclosures = _disclosures(world.accept(read(account, 3)))
+    disclosures = disclosures_in(world.accept(read(account, 3)))
 
     ids = {d.node_id for d in disclosures}
     assert len(ids) == len(disclosures)
     assert not ids & used
-
-
-def test_a_read_in_a_later_session_states_the_rate_as_a_mention() -> None:
-    world = World()
-    account = world.open()
-
-    world.accept(read(account, 3))
-
-    graph = fold_trace(world.records, LOADED_PACK)
-    (node,) = graph.update_chain((account, RATE))
-    assert node.value == InterestRate(Decimal(OPENING_RATE))
-    assert graph.mentions(node.id) == {3}
 
 
 def test_a_mention_is_one_said_in_edge_from_each_value_node() -> None:
@@ -94,7 +79,7 @@ def test_a_mention_is_one_said_in_edge_from_each_value_node() -> None:
     world.accept(read(account, 3))
 
     graph = fold_trace(world.records, LOADED_PACK)
-    opened = {d.node_id for d in _disclosures(opening)}
+    opened = {d.node_id for d in disclosures_in(opening)}
     assert _said_in(graph) == {
         Edge(EdgeKind.SAID_IN, node, 3) for node in opened
     }
@@ -168,7 +153,7 @@ def test_after_a_mutate_a_read_mentions_the_newest_node_only() -> None:
     account = world.open()
     world.accept(reprice(account, 2, "3.90"))
 
-    disclosures = _disclosures(world.accept(read(account, 3)))
+    disclosures = disclosures_in(world.accept(read(account, 3)))
 
     (rate,) = [d for d in disclosures if d.relation == RATE]
     assert rate.value == InterestRate(Decimal("3.90"))

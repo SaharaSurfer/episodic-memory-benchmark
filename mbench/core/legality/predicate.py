@@ -4,6 +4,8 @@ from enum import Enum
 
 from mbench.core.folds.registry import Entry, Registry, Stamped, is_live
 from mbench.core.records.commands import (
+    Command,
+    EventCommand,
     InitCommand,
     MutateCommand,
     ReadCommand,
@@ -11,6 +13,7 @@ from mbench.core.records.commands import (
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import (
     READ,
+    AcceptedCommand,
     Disclosure,
     Event,
     InitEvent,
@@ -54,25 +57,35 @@ class Refusal:
     reason: Reason
 
 
-type EventCommand = InitCommand | MutateCommand
-type Command = EventCommand | ReadCommand
-
-
 def decide(
     command: Command,
     registry: Registry,
     pack: LoadedPack,
     allocator: IdAllocator,
-) -> tuple[Record, ...] | Refusal:
-    """The records an accepted command produces, or why it is refused."""
+) -> AcceptedCommand | Refusal:
+    """The command with the records it produces, or why it is refused."""
+
+    refusal = check(command, registry, pack)
+    if refusal is not None:
+        return refusal
+
+    records = _build_records(command, registry, pack, allocator)
+
+    return AcceptedCommand(command, records)
+
+
+def check(
+    command: Command, registry: Registry, pack: LoadedPack
+) -> Refusal | None:
+    """Why the command is illegal at this registry, if it is."""
 
     if isinstance(command, ReadCommand):
-        return _decide_read(command, registry, allocator)
+        return refuse_missing_entity(command, registry)
 
     writes = _writes(command, pack)
     _check_links(command, pack)
 
-    refusal = (
+    return (
         refuse_unfit_referent(command, registry, pack)
         or refuse_unfit_endpoints(command, registry, pack)
         or refuse_second_write(command, writes, registry)
@@ -80,14 +93,24 @@ def decide(
         or refuse_anchor_same_zone(command, registry, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
-    if refusal is not None:
-        return refusal
+
+
+def _build_records(
+    command: Command,
+    registry: Registry,
+    pack: LoadedPack,
+    allocator: IdAllocator,
+) -> tuple[Record, ...]:
+    """The records of a command the check has passed, drawing their ids."""
+
+    if isinstance(command, ReadCommand):
+        return _read_records(command, registry, allocator)
 
     source = default_source(command, pack)
     if isinstance(command, InitCommand):
         return _init_records(command, source, allocator)
 
-    return _mutate_records(command, writes, source, allocator)
+    return _mutate_records(command, _writes(command, pack), source, allocator)
 
 
 def default_source(command: EventCommand, pack: LoadedPack) -> str:
@@ -448,19 +471,16 @@ def _disclosures(
     )
 
 
-def _decide_read(
+def _read_records(
     command: ReadCommand, registry: Registry, allocator: IdAllocator
-) -> tuple[Record, ...] | Refusal:
-    """The READ's disclosures of the entity's current values, or a refusal."""
-
-    refusal = refuse_missing_entity(command, registry)
-    if refusal is not None:
-        return refusal
+) -> tuple[Record, ...]:
+    """The READ's disclosures of the entity's current values."""
 
     # Each value is copied from the registry, so these disclosures always
     # pass `refuse_untrue_disclosure`, only a disclosure written by other
     # means, as in a stored log, can fail it.
     entry = registry.entry(command.entity)
+    # The check has refused a READ of an entity the registry lacks.
     assert entry is not None
 
     return tuple(

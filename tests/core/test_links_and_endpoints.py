@@ -11,7 +11,12 @@ from mbench.core.legality.predicate import (
     refuse_untrue_disclosure,
 )
 from mbench.core.records.ids import NodeId
-from mbench.core.records.log import Disclosure, InitEvent, Link, Record
+from mbench.core.records.log import (
+    AcceptedCommand,
+    Disclosure,
+    InitEvent,
+    Link,
+)
 from mbench.packs.spec import Gate, InitAction
 from tests.core.world import (
     CARD_LINK,
@@ -147,7 +152,7 @@ def test_an_endpoint_failing_its_filter_is_refused() -> None:
     world = World()
     account = world.open()  # a savings account
 
-    def wanting(kind: str) -> tuple[Record, ...] | Refusal:
+    def wanting(kind: str) -> AcceptedCommand | Refusal:
         command = replace(
             issue(account, ISSUED_IN),
             filters={CARD_LINK: {"kind": frozenset({DepositKind(kind)})}},

@@ -1,8 +1,8 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from mbench.core.records.frozen import freeze
 from mbench.core.records.ids import NodeId
-from mbench.core.records.log import freeze
 from mbench.core.values.protocol import ValueClass
 
 # The values an endpoint must hold, per relation, for the command to pick it.
@@ -58,3 +58,7 @@ class ReadCommand:
     initiator: str
     source: str
     entity: NodeId
+
+
+type EventCommand = InitCommand | MutateCommand
+type Command = EventCommand | ReadCommand

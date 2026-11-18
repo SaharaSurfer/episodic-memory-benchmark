@@ -1,55 +1,20 @@
-from collections.abc import Mapping
 from decimal import Decimal
-from types import MappingProxyType
 
 import pytest
 
 from mbench.core.folds.graph import EdgeKind, EntityNode, fold_trace
 from mbench.core.folds.registry import Registry, Stamped, fold_world
 from mbench.core.legality.predicate import Reason, Refusal, decide
-from mbench.core.records.commands import InitCommand
 from mbench.core.records.ids import IdAllocator
 from mbench.core.records.log import Disclosure, InitEvent, Record
 from mbench.core.values.protocol import ValueClass
+from tests.core.world import OPENED_IN, WRITES, World, open_account
 from tests.testpack.pack import LOADED_PACK
-from tests.testpack.values import (
-    DepositKind,
-    InterestRate,
-    LastFour,
-    LifecycleStatus,
-    MonetaryAmount,
-    ProductName,
-)
-
-SESSION = 1
-
-# Read-only, since every test shares it as the default command's writes.
-WRITES: Mapping[str, ValueClass] = MappingProxyType(
-    {
-        "kind": DepositKind("savings"),
-        "lastFour": LastFour("4471"),
-        "productName": ProductName("High Yield Savings"),
-        "hasInterestRate": InterestRate(Decimal("4.25")),
-        "hasMonthlyFee": MonetaryAmount(Decimal("0")),
-        "hasStatus": LifecycleStatus("active"),
-    }
-)
+from tests.testpack.values import LastFour, MonetaryAmount
 
 
-def _open(writes: Mapping[str, ValueClass] = WRITES) -> InitCommand:
-    return InitCommand(
-        session=SESSION,
-        initiator="CLIENT",
-        action_type="OPEN_DEPOSIT_ACCOUNT",
-        source="customer",
-        writes=writes,
-    )
-
-
-def _accept(command: InitCommand) -> tuple[Record, ...]:
-    outcome = decide(command, Registry(), LOADED_PACK, IdAllocator(0))
-    assert not isinstance(outcome, Refusal)
-    return outcome
+def _opening_records() -> tuple[Record, ...]:
+    return World().accept(open_account(OPENED_IN))
 
 
 def _split(
@@ -61,7 +26,7 @@ def _split(
 
 
 def test_accepting_an_init_gives_one_event_then_its_disclosures() -> None:
-    first, *rest = _accept(_open())
+    first, *rest = _opening_records()
 
     assert isinstance(first, InitEvent)
     assert all(isinstance(record, Disclosure) for record in rest)
@@ -71,12 +36,14 @@ def test_the_init_event_carries_its_command_and_a_new_id() -> None:
     allocator = IdAllocator(seed=5)
     expected_id = IdAllocator(seed=5).allocate()
 
-    outcome = decide(_open(), Registry(), LOADED_PACK, allocator)
+    outcome = decide(
+        open_account(OPENED_IN), Registry(), LOADED_PACK, allocator
+    )
 
     assert not isinstance(outcome, Refusal)
-    (event,), _ = _split(outcome)
+    (event,), _ = _split(outcome.records)
     assert event == InitEvent(
-        session=SESSION,
+        session=OPENED_IN,
         initiator="CLIENT",
         action_type="OPEN_DEPOSIT_ACCOUNT",
         new_id=expected_id,
@@ -85,7 +52,7 @@ def test_the_init_event_carries_its_command_and_a_new_id() -> None:
 
 
 def test_the_init_discloses_every_relation_it_writes_status_included() -> None:
-    (event,), disclosures = _split(_accept(_open()))
+    (event,), disclosures = _split(_opening_records())
 
     assert {(d.relation, d.value) for d in disclosures} == set(WRITES.items())
     assert len(disclosures) == len(WRITES)
@@ -93,14 +60,14 @@ def test_the_init_discloses_every_relation_it_writes_status_included() -> None:
 
 
 def test_each_disclosure_has_its_own_node_id() -> None:
-    (event,), disclosures = _split(_accept(_open()))
+    (event,), disclosures = _split(_opening_records())
     ids = [event.new_id, *(d.node_id for d in disclosures)]
 
     assert len(set(ids)) == len(ids)
 
 
 def test_each_disclosure_is_framed_by_its_event_and_names_the_source() -> None:
-    (event,), disclosures = _split(_accept(_open()))
+    (event,), disclosures = _split(_opening_records())
 
     assert all(d.session == event.session for d in disclosures)
     assert all(d.action_type == event.action_type for d in disclosures)
@@ -109,7 +76,7 @@ def test_each_disclosure_is_framed_by_its_event_and_names_the_source() -> None:
 
 
 def test_the_registry_holds_one_entry_with_every_value_stamped() -> None:
-    records = _accept(_open())
+    records = _opening_records()
     (event,), _ = _split(records)
 
     registry = fold_world(records, LOADED_PACK)
@@ -120,12 +87,13 @@ def test_the_registry_holds_one_entry_with_every_value_stamped() -> None:
     assert entry.type == "DEPOSIT_ACCOUNT"
     assert entry.id == event.new_id
     assert entry.values == {
-        relation: Stamped(value, SESSION) for relation, value in WRITES.items()
+        relation: Stamped(value, OPENED_IN)
+        for relation, value in WRITES.items()
     }
 
 
 def test_the_graph_holds_the_entity_and_one_value_node_per_relation() -> None:
-    records = _accept(_open())
+    records = _opening_records()
     (event,), disclosures = _split(records)
 
     graph = fold_trace(records, LOADED_PACK)
@@ -145,7 +113,7 @@ def test_the_graph_holds_the_entity_and_one_value_node_per_relation() -> None:
 
 
 def test_every_node_has_exactly_one_occurred_in_edge_to_the_session() -> None:
-    graph = fold_trace(_accept(_open()), LOADED_PACK)
+    graph = fold_trace(_opening_records(), LOADED_PACK)
     nodes = {node.id for node in graph.entity_nodes() | graph.value_nodes()}
 
     occurred = [
@@ -153,30 +121,30 @@ def test_every_node_has_exactly_one_occurred_in_edge_to_the_session() -> None:
     ]
 
     assert sorted(edge.source for edge in occurred) == sorted(nodes)
-    assert {edge.target for edge in occurred} == {SESSION}
-    assert graph.session_nodes() == {SESSION}
+    assert {edge.target for edge in occurred} == {OPENED_IN}
+    assert graph.session_nodes() == {OPENED_IN}
 
 
 @pytest.mark.parametrize(
-    "writes",
+    "changes",
     [
-        {**WRITES, "lastFour": LastFour("44a1")},
-        {**WRITES, "hasInterestRate": MonetaryAmount(Decimal("4.25"))},
-        {**WRITES, "noSuchRelation": LastFour("1234")},
+        {"lastFour": LastFour("44a1")},
+        {"hasInterestRate": MonetaryAmount(Decimal("4.25"))},
+        {"noSuchRelation": LastFour("1234")},
     ],
     ids=["invalid value", "value of another class", "relation the type lacks"],
 )
 def test_a_value_the_relation_does_not_hold_is_refused_not_raised(
-    writes: dict[str, ValueClass],
+    changes: dict[str, ValueClass],
 ) -> None:
-    outcome = decide(_open(writes), Registry(), LOADED_PACK, IdAllocator(0))
+    outcome = World().decide(open_account(OPENED_IN, **changes))
 
     assert outcome == Refusal(clause=3, reason=Reason.INVALID_VALUE)
 
 
 def test_a_refused_command_allocates_no_id() -> None:
     allocator = IdAllocator(seed=9)
-    command = _open({**WRITES, "lastFour": LastFour("44a1")})
+    command = open_account(OPENED_IN, lastFour=LastFour("44a1"))
 
     decide(command, Registry(), LOADED_PACK, allocator)
 

@@ -1,13 +1,13 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
+from mbench.core.records.frozen import freeze
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import (
     Event,
     InitEvent,
     MutateEvent,
     Record,
-    freeze,
 )
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import LoadedPack

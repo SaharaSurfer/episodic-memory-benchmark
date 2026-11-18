@@ -11,8 +11,7 @@ from mbench.core.folds.graph import (
     fold_trace,
 )
 from mbench.core.folds.registry import Stamped, fold_world
-from mbench.core.legality.predicate import decide
-from mbench.core.records.commands import InitCommand, MutateCommand
+from mbench.core.records.commands import Command, InitCommand, MutateCommand
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import Disclosure, MutateEvent
 from tests.core.world import (
@@ -214,30 +213,35 @@ def test_a_chain_returning_to_an_earlier_value_counts_every_write() -> None:
     assert graph.latest(pair) == {chain[-1]}
 
 
-def test_a_command_naming_an_action_of_the_other_shape_raises() -> None:
+@pytest.mark.parametrize(
+    "command",
+    [
+        lambda account: MutateCommand(
+            session=2,
+            initiator="BANK",
+            action_type="OPEN_DEPOSIT_ACCOUNT",
+            source="letter",
+            referent=account,
+            value=MonetaryAmount(Decimal("0")),
+        ),
+        lambda _: InitCommand(
+            session=2,
+            initiator="CLIENT",
+            action_type="CHANGE_ACCOUNT_FEE",
+            source="customer",
+            writes=WRITES,
+        ),
+    ],
+    ids=["mutate naming an init", "init naming a mutate"],
+)
+def test_a_command_naming_an_action_of_the_other_shape_raises(
+    command: Callable[[NodeId], Command],
+) -> None:
     world = World()
     account = world.open()
-    registry = fold_world(world.records, LOADED_PACK)
-    mutate_as_init = MutateCommand(
-        session=2,
-        initiator="BANK",
-        action_type="OPEN_DEPOSIT_ACCOUNT",
-        source="letter",
-        referent=account,
-        value=MonetaryAmount(Decimal("0")),
-    )
-    init_as_mutate = InitCommand(
-        session=2,
-        initiator="CLIENT",
-        action_type="CHANGE_ACCOUNT_FEE",
-        source="customer",
-        writes=WRITES,
-    )
 
     with pytest.raises(TypeError):
-        decide(mutate_as_init, registry, LOADED_PACK, world.allocator)
-    with pytest.raises(TypeError):
-        decide(init_as_mutate, registry, LOADED_PACK, world.allocator)
+        world.decide(command(account))
 
 
 @pytest.mark.parametrize(

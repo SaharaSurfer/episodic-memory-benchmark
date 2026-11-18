@@ -1,20 +1,16 @@
 import datetime
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from types import MappingProxyType
+from itertools import chain
 
+from mbench.core.records.commands import Command
+from mbench.core.records.frozen import freeze
 from mbench.core.records.ids import NodeId
 from mbench.core.values.protocol import ValueClass
 
 # The action type of a disclosure that re-states current values, stated by no
 # event and so named by the core rather than by a pack's ActionTypes.
 READ = "READ"
-
-
-def freeze[K, V](mapping: Mapping[K, V]) -> Mapping[K, V]:
-    """A read-only copy, so later changes to the given map don't reach it."""
-
-    return MappingProxyType(dict(mapping))
 
 
 @dataclass(frozen=True)
@@ -84,6 +80,14 @@ type Record = Event | Disclosure
 
 
 @dataclass(frozen=True)
+class AcceptedCommand:
+    """A command the predicate accepted, with the records it produced."""
+
+    command: Command
+    records: tuple[Record, ...]
+
+
+@dataclass(frozen=True)
 class SessionRow:
     """One session's row of the table, tier and date are filled later."""
 
@@ -94,9 +98,9 @@ class SessionRow:
 
 @dataclass(frozen=True)
 class Log:
-    """The records in order, and the sessions they name by index."""
+    """The accepted commands in order, and the sessions named by index."""
 
-    records: tuple[Record, ...] = ()
+    accepted: tuple[AcceptedCommand, ...] = ()
     sessions: Mapping[int, SessionRow] = field(
         default_factory=lambda: freeze({})
     )
@@ -106,13 +110,23 @@ class Log:
 
         object.__setattr__(self, "sessions", freeze(self.sessions))
 
-    def append(self, records: Iterable[Record]) -> "Log":
-        """A new log with the records added and a row for each new session."""
+    @property
+    def records(self) -> tuple[Record, ...]:
+        """Every accepted command's records, in order."""
 
-        added = tuple(records)
+        return tuple(
+            chain.from_iterable(accepted.records for accepted in self.accepted)
+        )
+
+    def append(self, accepted: Iterable[AcceptedCommand]) -> "Log":
+        """A new log with the commands added and a row per new session."""
+
+        added = tuple(accepted)
         sessions = dict(self.sessions)
 
-        for record in added:
-            sessions.setdefault(record.session, SessionRow(record.session))
+        # Rows come from records, so a command that produced none adds none.
+        for accepted_command in added:
+            for record in accepted_command.records:
+                sessions.setdefault(record.session, SessionRow(record.session))
 
-        return Log(self.records + added, sessions)
+        return Log(self.accepted + added, sessions)

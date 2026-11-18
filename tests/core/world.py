@@ -3,14 +3,21 @@ from decimal import Decimal
 from types import MappingProxyType
 
 from mbench.core.folds.registry import fold_world
-from mbench.core.legality.predicate import Command, Refusal, decide
+from mbench.core.legality.predicate import Refusal, decide
 from mbench.core.records.commands import (
+    Command,
     InitCommand,
     MutateCommand,
     ReadCommand,
 )
 from mbench.core.records.ids import IdAllocator, NodeId
-from mbench.core.records.log import InitEvent, Record
+from mbench.core.records.log import (
+    AcceptedCommand,
+    Disclosure,
+    InitEvent,
+    Log,
+    Record,
+)
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import LoadedPack
 from tests.testpack.pack import LOADED_PACK
@@ -65,11 +72,17 @@ class World:
         """Start an empty log over the pack, with its own allocator."""
 
         self.pack = pack
-        self.records: tuple[Record, ...] = ()
+        self.log = Log()
         self.allocator = IdAllocator(seed=0)
         self.opened_count = 0
 
-    def decide(self, command: Command) -> tuple[Record, ...] | Refusal:
+    @property
+    def records(self) -> tuple[Record, ...]:
+        """The log's records so far, in order."""
+
+        return self.log.records
+
+    def decide(self, command: Command) -> AcceptedCommand | Refusal:
         """Decide the command against the log so far, appending nothing."""
 
         registry = fold_world(self.records, self.pack)
@@ -77,13 +90,13 @@ class World:
         return decide(command, registry, self.pack, self.allocator)
 
     def accept(self, command: Command) -> tuple[Record, ...]:
-        """Decide the command against the log so far and append its records."""
+        """Decide the command, append it to the log and give its records."""
 
         outcome = self.decide(command)
         assert not isinstance(outcome, Refusal)
 
-        self.records += outcome
-        return outcome
+        self.log = self.log.append([outcome])
+        return outcome.records
 
     def open(self) -> NodeId:
         """Open a deposit account in the first session, and give its id."""
@@ -179,3 +192,9 @@ def read(entity: NodeId, session: int) -> ReadCommand:
         source="operator",
         entity=entity,
     )
+
+
+def disclosures_in(records: tuple[Record, ...]) -> list[Disclosure]:
+    """The disclosures among the records, in order."""
+
+    return [r for r in records if isinstance(r, Disclosure)]

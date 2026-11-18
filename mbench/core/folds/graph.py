@@ -2,8 +2,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
+from mbench.core.records.frozen import freeze
 from mbench.core.records.ids import NodeId
-from mbench.core.records.log import Disclosure, Link, Record, freeze
+from mbench.core.records.log import Disclosure, Link, Record
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import LoadedPack
 

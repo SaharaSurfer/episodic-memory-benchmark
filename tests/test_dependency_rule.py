@@ -101,10 +101,9 @@ def test_importing_pack_code_other_than_the_spec_is_reported(
     ]
 
 
-def _test_pack_names() -> set[str]:
+def _distinctive_test_pack_names() -> set[str]:
     pack = LOADED_PACK
-
-    return {
+    names = {
         *pack.entity_types,
         *(r for t in pack.entity_types.values() for r in t.relations),
         *pack.action_types,
@@ -113,6 +112,10 @@ def _test_pack_names() -> set[str]:
         *pack.sources,
         pack.owner,
     }
+
+    # A plain word such as "kind" or "email" can mean anything in other code,
+    # so finding one there says nothing about knowing the pack.
+    return {n for n in names if not (n.isalpha() and n.islower())}
 
 
 def _pack_agnostic_modules() -> list[Path]:
@@ -127,7 +130,7 @@ def _pack_agnostic_modules() -> list[Path]:
 
 
 def test_no_test_pack_name_is_written_outside_a_concrete_pack() -> None:
-    names = _test_pack_names()
+    names = _distinctive_test_pack_names()
     written = [
         (path.relative_to(PACKAGE_ROOT), node.value)
         for path in _pack_agnostic_modules()

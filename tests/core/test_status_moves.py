@@ -9,7 +9,7 @@ from mbench.core.folds.registry import fold_world
 from mbench.core.legality.predicate import Reason, Refusal
 from mbench.core.records.commands import InitCommand, MutateCommand
 from mbench.core.records.ids import NodeId
-from mbench.core.records.log import InitEvent, MutateEvent, Record
+from mbench.core.records.log import AcceptedCommand, InitEvent, MutateEvent
 from mbench.packs.spec import EntityType, InitAction, MutateAction
 from tests.core.world import World, change_fee, move, reprice
 from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK
@@ -205,7 +205,7 @@ def test_terminal_statuses_are_read_from_the_pack() -> None:
         entity_types={DEPOSIT_ACCOUNT.name: frozen_is_terminal},
     )
 
-    def reprice_when_frozen(world: World) -> tuple[Record, ...] | Refusal:
+    def reprice_when_frozen(world: World) -> AcceptedCommand | Refusal:
         account = world.open()
         world.accept(move(account, 2, "FREEZE_DEPOSIT_ACCOUNT"))
         return world.decide(reprice(account, 3, "3.90"))
