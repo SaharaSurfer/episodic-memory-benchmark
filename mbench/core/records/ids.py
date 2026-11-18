@@ -19,6 +19,16 @@ class IdAllocator:
         self._stream = random.Random(seed)
         self._used = set(used)
 
+    def __copy__(self) -> "IdAllocator":
+        """An independent allocator that goes on to draw the same ids."""
+
+        # The default copy would share the stream and the used set, so a
+        # candidate's draws would shift every other candidate's.
+        duplicate = IdAllocator(seed=0, used=self._used)
+        duplicate._stream.setstate(self._stream.getstate())
+
+        return duplicate
+
     def allocate(self) -> NodeId:
         """Draw the next unused id and mark it used."""
 

@@ -4,8 +4,9 @@ from decimal import Decimal
 from types import MappingProxyType
 
 from mbench.core.folds.graph import Graph, fold_trace
-from mbench.core.folds.registry import Registry, fold_world
-from mbench.core.legality.predicate import Refusal, decide
+from mbench.core.folds.registry import Registry
+from mbench.core.legality.predicate import Refusal
+from mbench.core.log_builder import LogBuilder
 from mbench.core.records.commands import (
     AgreeingDoubleDisclosureCommand,
     Command,
@@ -14,7 +15,7 @@ from mbench.core.records.commands import (
     MutateCommand,
     ReadCommand,
 )
-from mbench.core.records.ids import IdAllocator, NodeId
+from mbench.core.records.ids import NodeId
 from mbench.core.records.log import (
     AcceptedCommand,
     Disclosure,
@@ -114,12 +115,17 @@ class World:
     """A log built one accepted command at a time."""
 
     def __init__(self, pack: LoadedPack = LOADED_PACK) -> None:
-        """Start an empty log over the pack, with its own allocator."""
+        """Start an empty log over the pack."""
 
         self.pack = pack
-        self.log = Log()
-        self.allocator = IdAllocator(seed=0)
+        self._builder = LogBuilder(pack, id_seed=0)
         self.opened_count = 0
+
+    @property
+    def log(self) -> Log:
+        """The log so far."""
+
+        return self._builder.log
 
     @property
     def records(self) -> tuple[Record, ...]:
@@ -129,9 +135,9 @@ class World:
 
     @property
     def registry(self) -> Registry:
-        """The registry folded from the log so far."""
+        """The registry at the end of the log so far."""
 
-        return fold_world(self.records, self.pack)
+        return self._builder.registry
 
     @property
     def graph(self) -> Graph:
@@ -142,15 +148,16 @@ class World:
     def decide(self, command: Command) -> AcceptedCommand | Refusal:
         """Decide the command against the log so far, appending nothing."""
 
-        return decide(command, self.registry, self.pack, self.allocator)
+        return self._builder.dry_run().decide(command)
 
     def accept(self, command: Command) -> tuple[Record, ...]:
         """Decide the command, append it to the log and give its records."""
 
-        outcome = self.decide(command)
+        run = self._builder.dry_run()
+        outcome = run.decide(command)
         assert not isinstance(outcome, Refusal)
 
-        self.log = self.log.append([outcome])
+        self._builder.commit(run)
         return outcome.records
 
     def open(self, **changes: ValueClass) -> NodeId:
@@ -230,6 +237,12 @@ def opening_lacking(
     return replace(command, writes=writes)
 
 
+def unfilled_opening(session: int = OPENED_IN) -> InitCommand:
+    """A command opening an account, no value of it chosen yet."""
+
+    return replace(open_account(session), writes={})
+
+
 def issue(account: NodeId, session: int) -> InitCommand:
     """A command issuing a card on the account, filtering no endpoint."""
 
@@ -294,6 +307,14 @@ def change_fee(referent: NodeId, session: int, amount: str) -> MutateCommand:
         referent=referent,
         value=MonetaryAmount(Decimal(amount)),
     )
+
+
+def unfilled_fee_change(
+    account: NodeId, session: int = ISSUED_IN
+) -> MutateCommand:
+    """A command changing the account's fee, the new fee not chosen yet."""
+
+    return replace(change_fee(account, session, "0"), value=None)
 
 
 def reprice(referent: NodeId, session: int, rate: str) -> MutateCommand:

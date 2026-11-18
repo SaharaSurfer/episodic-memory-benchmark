@@ -6,14 +6,15 @@ from typing import Any, ClassVar, Self
 
 import pytest
 
-from mbench.core.folds.registry import Registry
-from mbench.core.legality.predicate import Refusal
+from mbench.core.folds.registry import Registry, fold_world
+from mbench.core.legality.predicate import Refusal, decide
 from mbench.core.records.commands import (
     ConflictingDoubleDisclosureCommand,
     InitCommand,
     MutateCommand,
 )
-from mbench.core.records.ids import NodeId
+from mbench.core.records.ids import IdAllocator, NodeId
+from mbench.core.records.log import Record
 from mbench.core.values.factory import Factory, FillReason, FillRefusal
 from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.core.values.samplers import (
@@ -40,7 +41,6 @@ from tests.core.world import (
     REPORTED_IN,
     WRITES,
     World,
-    change_fee,
     contest,
     created_id,
     fee_contest,
@@ -49,6 +49,8 @@ from tests.core.world import (
     report_fraud,
     reprice,
     request_card,
+    unfilled_fee_change,
+    unfilled_opening,
     with_action,
     with_entity_type,
 )
@@ -74,18 +76,6 @@ SEEDS = range(40)
 REDRAW_SEEDS = range(5)
 
 
-def _unfilled_opening(session: int = OPENED_IN) -> InitCommand:
-    """A command opening an account, no value of it chosen yet."""
-
-    return InitCommand(
-        session=session,
-        initiator="CLIENT",
-        action_type=OPEN_ACCOUNT,
-        source="customer",
-        writes={},
-    )
-
-
 def _unfilled_card(account: NodeId) -> InitCommand:
     """A command issuing a card on the account, no value chosen yet."""
 
@@ -106,19 +96,13 @@ def _filled_init(
 def _filled_opening(factory: Factory, session: int = OPENED_IN) -> InitCommand:
     """The factory's filling of an opening, on an empty registry."""
 
-    return _filled_init(factory, _unfilled_opening(session), Registry())
+    return _filled_init(factory, unfilled_opening(session), Registry())
 
 
 def _unfilled_reprice(account: NodeId, session: int = 2) -> MutateCommand:
     """A command repricing the account, the new rate not chosen yet."""
 
     return replace(reprice(account, session, "0"), value=None)
-
-
-def _unfilled_fee_change(account: NodeId, session: int = 2) -> MutateCommand:
-    """A command changing the account's fee, the new fee not chosen yet."""
-
-    return replace(change_fee(account, session, "0"), value=None)
 
 
 def _filled_mutate(
@@ -141,7 +125,7 @@ def test_an_opening_comes_back_with_every_relation_set() -> None:
 def test_filling_keeps_everything_but_the_writes() -> None:
     filled = _filled_opening(Factory(0, LOADED_PACK))
 
-    assert replace(filled, writes={}) == _unfilled_opening()
+    assert replace(filled, writes={}) == unfilled_opening()
 
 
 def test_an_opening_starts_in_the_status_the_init_fixes() -> None:
@@ -175,7 +159,7 @@ def test_samplers_run_in_declaration_order() -> None:
     pack = replace(LOADED_PACK, init_samplers=kind_too_late)
 
     with pytest.raises(LookupError, match="kind"):
-        Factory(0, pack).fill(_unfilled_opening(), Registry())
+        Factory(0, pack).fill(unfilled_opening(), Registry())
 
 
 def test_a_later_sampler_reads_a_value_the_init_fixes() -> None:
@@ -220,32 +204,48 @@ def test_each_fill_draws_on_from_the_last() -> None:
     assert _filled_opening(factory).writes != _filled_opening(factory).writes
 
 
-def _allocate(world: World, count: int) -> None:
-    """Take that many ids from the world's allocator."""
+def _allocate(allocator: IdAllocator, count: int) -> None:
+    """Take that many ids from the allocator."""
 
     for _ in range(count):
-        world.allocator.allocate()
+        allocator.allocate()
+
+
+def _accepted_records(
+    command: InitCommand | MutateCommand,
+    registry: Registry,
+    allocator: IdAllocator,
+) -> tuple[Record, ...]:
+    """The records of a command the predicate is expected to accept."""
+
+    outcome = decide(command, registry, LOADED_PACK, allocator)
+    assert not isinstance(outcome, Refusal)
+
+    return outcome.records
 
 
 def _values_filled(seed: int, extra_ids: int) -> list[ValueClass]:
     """Each value a run fills, allocating extra ids before every command."""
 
-    world = World()
+    allocator = IdAllocator(seed=0)
     factory = Factory(seed, LOADED_PACK)
 
     # Before the opening too, so the account's own id differs between runs.
-    _allocate(world, extra_ids)
+    _allocate(allocator, extra_ids)
     opening = _filled_opening(factory)
-    account = created_id(world.accept(opening))
+    records = _accepted_records(opening, Registry(), allocator)
+    account = created_id(records)
+    registry = fold_world(records, LOADED_PACK)
     values = list(opening.writes.values())
 
     for session in (2, 3, 4):
-        _allocate(world, extra_ids)
+        _allocate(allocator, extra_ids)
 
         step = _filled_mutate(
-            factory, _unfilled_fee_change(account, session), world.registry
+            factory, _unfilled_reprice(account, session), registry
         )
-        world.accept(step)
+        records = _accepted_records(step, registry, allocator)
+        registry = fold_world(records, LOADED_PACK, registry)
         assert step.value is not None
         values.append(step.value)
 
@@ -260,7 +260,7 @@ def test_an_opening_with_nothing_left_to_draw_is_refused() -> None:
     nothing = {(OPEN_ACCOUNT, "kind"): Choice((CHECKING,), weights=(0.0,))}
     pack = replace(LOADED_PACK, init_samplers=nothing)
 
-    outcome = Factory(0, pack).fill(_unfilled_opening(), Registry())
+    outcome = Factory(0, pack).fill(unfilled_opening(), Registry())
 
     assert outcome == FillRefusal(FillReason.NOTHING_LEFT_TO_DRAW)
 
@@ -273,7 +273,7 @@ def test_a_command_already_holding_values_raises() -> None:
 
 
 def test_an_init_command_naming_a_mutate_raises() -> None:
-    command = replace(_unfilled_opening(), action_type="CHANGE_ACCOUNT_FEE")
+    command = replace(unfilled_opening(), action_type="CHANGE_ACCOUNT_FEE")
 
     with pytest.raises(TypeError, match="cannot take"):
         Factory(0, LOADED_PACK).fill(command, Registry())
@@ -314,7 +314,7 @@ def test_a_case_is_filled_with_the_kind_its_init_fixes(
 
 def test_filling_a_mutate_keeps_everything_but_the_value() -> None:
     world = World()
-    command = _unfilled_fee_change(world.open())
+    command = unfilled_fee_change(world.open())
 
     filled = _filled_mutate(Factory(0, LOADED_PACK), command, world.registry)
 
@@ -361,7 +361,7 @@ def test_a_new_fee_differs_from_the_current_one(seed: int) -> None:
 
     filled = _filled_mutate(
         Factory(seed, LOADED_PACK),
-        _unfilled_fee_change(account),
+        unfilled_fee_change(account),
         world.registry,
     )
 
@@ -378,7 +378,7 @@ def test_a_filled_mutate_is_accepted(seed: int) -> None:
     account = created_id(world.accept(_filled_opening(factory)))
 
     for session, unfilled in enumerate(
-        (_unfilled_reprice, _unfilled_fee_change, _unfilled_reprice), start=2
+        (_unfilled_reprice, unfilled_fee_change, _unfilled_reprice), start=2
     ):
         command = unfilled(account, session)
         world.accept(_filled_mutate(factory, command, world.registry))
@@ -446,7 +446,7 @@ def test_a_contested_value_does_not_stop_a_step_of_another_relation() -> None:
     world = World()
     account = world.open()
     world.accept(contest(account, 2, "4.00", "4.10"))
-    command = _unfilled_fee_change(account, 3)
+    command = unfilled_fee_change(account, 3)
 
     filled = _filled_mutate(Factory(0, LOADED_PACK), command, world.registry)
 
@@ -493,7 +493,7 @@ def test_a_step_with_nothing_left_to_draw_is_refused() -> None:
     account = world.open()
 
     outcome = Factory(0, pack).fill(
-        _unfilled_fee_change(account), world.registry
+        unfilled_fee_change(account), world.registry
     )
 
     assert outcome == FillRefusal(FillReason.NOTHING_LEFT_TO_DRAW)
@@ -778,7 +778,7 @@ def test_a_value_without_a_scope_may_repeat() -> None:
     world = World(pack)
     world.open()
 
-    filled = _filled_init(Factory(0, pack), _unfilled_opening(), world.registry)
+    filled = _filled_init(Factory(0, pack), unfilled_opening(), world.registry)
 
     assert filled.writes[FEE] == WRITES[FEE]
 

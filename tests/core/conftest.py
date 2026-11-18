@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+from mbench.core.folds.registry import fold_world
 from mbench.core.legality.replay import replay
 from tests.core.world import World
 
@@ -11,13 +12,13 @@ from tests.core.world import World
 def every_world_replays_clean(
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
-    """Replay the log of every World a test builds, once the test is done."""
+    """Check the log and registry of every World once the test is done."""
 
     worlds: list[World] = []
     original_init = World.__init__
 
     def init_and_remember(world: World, *args: Any, **kwargs: Any) -> None:
-        """Start the World as usual and keep it for the replay."""
+        """Start the World as usual and keep it for the checks."""
 
         original_init(world, *args, **kwargs)
         worlds.append(world)
@@ -28,3 +29,4 @@ def every_world_replays_clean(
 
     for world in worlds:
         assert replay(world.log, world.pack) is None
+        assert world.registry == fold_world(world.records, world.pack)

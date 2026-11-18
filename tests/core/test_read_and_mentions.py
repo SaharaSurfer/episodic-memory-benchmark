@@ -114,10 +114,13 @@ def test_a_read_in_a_session_before_the_write_is_no_mention() -> None:
     world = World()
     account = world.open()
     world.accept(reprice(account, 3, "3.90"))
+    later_read = world.decide(read(account, 3))
+    assert not isinstance(later_read, Refusal)
 
-    world.accept(read(account, 2))
+    # A log builder stops this order, but a fold must still read it rightly.
+    moved = [replace(record, session=2) for record in later_read.records]
+    graph = fold_trace((*world.records, *moved), world.pack)
 
-    graph = world.graph
     (latest,) = graph.latest((account, RATE))
     assert graph.mentions(latest.id) == frozenset()
 

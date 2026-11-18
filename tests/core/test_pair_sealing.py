@@ -166,15 +166,15 @@ def test_a_read_of_an_entity_linked_to_the_sealed_one_is_accepted() -> None:
 
 def test_sealing_one_entity_leaves_the_same_pair_of_another_writable() -> None:
     world = World()
-    _contested_account(world)
     other = world.open()
+    _contested_account(world)
 
     assert not isinstance(world.decide(reprice(other, LATER, FRESH)), Refusal)
 
 
 def test_sealing_one_entity_leaves_another_readable() -> None:
     world = World()
-    _contested_account(world)
     other = world.open()
+    _contested_account(world)
 
     assert not isinstance(world.decide(read(other, LATER)), Refusal)

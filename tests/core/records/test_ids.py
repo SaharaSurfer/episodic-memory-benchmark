@@ -1,3 +1,4 @@
+import copy
 import random
 import re
 from itertools import pairwise
@@ -82,3 +83,37 @@ def test_the_global_random_state_does_not_shift_the_ids() -> None:
         ids.append(allocator.allocate())
 
     assert ids == expected
+
+
+def test_a_copy_draws_what_the_original_would_have_drawn_next() -> None:
+    original = IdAllocator(seed=31)
+    _allocate_many(original, 5)
+
+    duplicate = copy.copy(original)
+
+    assert _allocate_many(duplicate, 20) == _allocate_many(original, 20)
+
+
+def test_a_copy_keeps_the_ids_already_used() -> None:
+    plain = _allocate_many(IdAllocator(seed=13), 2)
+    original = IdAllocator(seed=13, used={plain[0]})
+
+    assert copy.copy(original).allocate() == plain[1]
+
+
+def test_drawing_from_the_original_leaves_a_copy_sequence_alone() -> None:
+    expected = _allocate_many(IdAllocator(seed=41), 20)
+    original = IdAllocator(seed=41)
+    duplicate = copy.copy(original)
+
+    _allocate_many(original, 10)
+
+    assert _allocate_many(duplicate, 20) == expected
+
+
+def test_an_id_a_copy_used_is_not_used_in_the_original() -> None:
+    original = IdAllocator(seed=43)
+    used_by_copy = copy.copy(original).allocate()
+
+    # Had the used set been shared, the original would skip this id.
+    assert original.allocate() == used_by_copy
