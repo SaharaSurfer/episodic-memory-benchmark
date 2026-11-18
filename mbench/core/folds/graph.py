@@ -48,6 +48,20 @@ type Pair = tuple[NodeId, str]
 
 
 @dataclass(frozen=True)
+class SessionBlock:
+    """What one session added to the graph."""
+
+    session: int
+    entity_nodes: frozenset[EntityNode]
+    value_nodes: frozenset[ValueNode]
+    value_edges: frozenset[Edge]
+    structural_edges: frozenset[Edge]
+    # The earlier value nodes this session re-said. Whole nodes, not ids, so a
+    # reader of the block has each value without looking it up.
+    mentions: frozenset[ValueNode]
+
+
+@dataclass(frozen=True)
 class Graph:
     """The knowledge trace: every node something disclosed, and its edges."""
 
@@ -127,18 +141,46 @@ class Graph:
 
         return self._said_in.get(node, frozenset())
 
+    def block(self, session: int) -> SessionBlock:
+        """What the session created, plus its mentions."""
+
+        created = {
+            node
+            for node, entered in self._occurred_in.items()
+            if entered == session
+        }
+
+        return SessionBlock(
+            session=session,
+            entity_nodes=frozenset(
+                entity
+                for node, entity in self._entity_nodes.items()
+                if node in created
+            ),
+            value_nodes=frozenset(
+                value
+                for node, value in self._value_nodes.items()
+                if node in created
+            ),
+            value_edges=frozenset(
+                edge for edge in self._value_edges() if edge.target in created
+            ),
+            # A link is written by its entity's INIT, so it enters with it.
+            structural_edges=frozenset(
+                edge
+                for edge in self._structural_edges()
+                if edge.source in created
+            ),
+            mentions=frozenset(
+                self._value_nodes[node]
+                for node, sessions in self._said_in.items()
+                if session in sessions
+            ),
+        )
+
     def edges(self) -> frozenset[Edge]:
         """Every edge: value, structural, each `occurredIn`, each mention."""
 
-        value_edges = {
-            Edge(EdgeKind.VALUE, entity, node, relation)
-            for (entity, relation), nodes in self._value_nodes_by_pair.items()
-            for node in nodes
-        }
-        structural = {
-            Edge(EdgeKind.STRUCTURAL, entity, target, relation)
-            for (entity, relation), target in self._links.items()
-        }
         occurred_in = {
             Edge(EdgeKind.OCCURRED_IN, node, session)
             for node, session in self._occurred_in.items()
@@ -149,7 +191,36 @@ class Graph:
             for session in sessions
         }
 
-        return frozenset(value_edges | structural | occurred_in | said_in)
+        return (
+            self._value_edges()
+            | self._structural_edges()
+            | occurred_in
+            | said_in
+        )
+
+    def contains(self, other: "Graph") -> bool:
+        """Whether this graph has every node, by id, and edge of the other."""
+
+        # Every node has an `occurredIn` edge and every session node an edge
+        # into it, so holding the edges holds the nodes.
+        return other.edges() <= self.edges()
+
+    def _value_edges(self) -> frozenset[Edge]:
+        """The edge from each value node's entity to the node."""
+
+        return frozenset(
+            Edge(EdgeKind.VALUE, entity, node, relation)
+            for (entity, relation), nodes in self._value_nodes_by_pair.items()
+            for node in nodes
+        )
+
+    def _structural_edges(self) -> frozenset[Edge]:
+        """The edge of each link, from its entity to the link's target."""
+
+        return frozenset(
+            Edge(EdgeKind.STRUCTURAL, entity, target, relation)
+            for (entity, relation), target in self._links.items()
+        )
 
 
 def evolve_trace(
