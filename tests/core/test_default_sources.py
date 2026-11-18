@@ -19,7 +19,8 @@ def _open(initiator: str, source: str | None) -> InitCommand:
 
 
 def _bank_off_stage() -> LoadedPack:
-    # The bank's speaker goes, and its source with it.
+    # The bank's speaker goes, its source with it, and the framings too, as
+    # they name sources these tests go on to remove.
     gone = {
         id
         for id, speaker in LOADED_PACK.speakers.items()
@@ -34,6 +35,7 @@ def _bank_off_stage() -> LoadedPack:
         sources={
             id: s for id, s in LOADED_PACK.sources.items() if id not in gone
         },
+        framings={},
     )
 
 

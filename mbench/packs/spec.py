@@ -181,6 +181,14 @@ class Source:
 
 
 @dataclass(frozen=True)
+class Framing:
+    """One way an ActionType occurs: who starts it and who states it."""
+
+    initiator: str
+    source: str
+
+
+@dataclass(frozen=True)
 class Linker:
     """Entities of a type that point at another entity by a link."""
 
@@ -222,9 +230,13 @@ class LoadedPack:
     role_filters: Mapping[str, RoleFilter] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Per ActionType name, every way the pack has it occur.
+    framings: Mapping[str, tuple[Framing, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
-        """Hold every table read-only, and refuse unmatched speaker sources."""
+        """Hold every table read-only, and refuse names that do not match."""
 
         for table in (
             "entity_types",
@@ -233,6 +245,7 @@ class LoadedPack:
             "speakers",
             "sources",
             "role_filters",
+            "framings",
         ):
             object.__setattr__(
                 self, table, MappingProxyType(dict(getattr(self, table)))
@@ -250,6 +263,19 @@ class LoadedPack:
                 f"speakers and speaker sources differ: {sorted(unmatched)}"
             )
 
+        # A misspelt name would read as an action nobody can contest, and
+        # conflicts on it would be refused with no sign of the mistake.
+        framings = [
+            framing for group in self.framings.values() for framing in group
+        ]
+        unknown = (
+            (self.framings.keys() - self.action_types.keys())
+            | ({framing.initiator for framing in framings} - self.actors.keys())
+            | ({framing.source for framing in framings} - self.sources.keys())
+        )
+        if unknown:
+            raise ValueError(f"framings name undeclared {sorted(unknown)}")
+
     def action_for(
         self, entity_type: str, relation: str, transition: Transition
     ) -> MutateAction | None:
@@ -265,6 +291,34 @@ class LoadedPack:
                 return action
 
         return None
+
+    def passes_owner_rule(self, action: str) -> bool:
+        """Whether someone other than the owner's speaker states the action."""
+
+        return bool(self._contestable_initiators(action))
+
+    def shared_initiators(self, first: str, second: str) -> frozenset[str]:
+        """The initiators both actions have a contestable framing for."""
+
+        return self._contestable_initiators(
+            first
+        ) & self._contestable_initiators(second)
+
+    def _contestable_initiators(self, action: str) -> frozenset[str]:
+        """The initiators of the action's framings the owner does not state."""
+
+        # The owner can't be unsure of a change it stated itself.
+        owners_speakers = {
+            speaker.id
+            for speaker in self.speakers.values()
+            if speaker.represents == self.owner
+        }
+
+        return frozenset(
+            framing.initiator
+            for framing in self.framings.get(action, ())
+            if framing.source not in owners_speakers
+        )
 
     def relations_read(self, name: str) -> Mapping[str, frozenset[str]]:
         """The relations, per entity type, that the named filter reads."""

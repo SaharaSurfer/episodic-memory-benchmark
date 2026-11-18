@@ -23,7 +23,7 @@ from mbench.core.records.log import (
     Record,
 )
 from mbench.core.values.protocol import ValueClass
-from mbench.packs.spec import LoadedPack
+from mbench.packs.spec import Framing, LoadedPack
 from tests.core.records.handmade import OPEN_ACCOUNT
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
@@ -33,6 +33,7 @@ from tests.testpack.values import (
     DepositKind,
     InterestRate,
     LastFour,
+    LifecycleStatus,
     MonetaryAmount,
     ProductName,
 )
@@ -257,6 +258,35 @@ def contest(
         b=InterestRate(Decimal(b)),
         sources=sources,
     )
+
+
+def status_contest(
+    referent: NodeId, session: int, a: LifecycleStatus, b: LifecycleStatus
+) -> ConflictingDoubleDisclosureCommand:
+    """A command in which two documents state different statuses."""
+
+    return ConflictingDoubleDisclosureCommand(
+        session=session,
+        initiator="BANK",
+        referent=referent,
+        relation="hasStatus",
+        a=a,
+        b=b,
+        sources=("letter", "email"),
+    )
+
+
+def with_framings(**framings: tuple[Framing, ...]) -> LoadedPack:
+    """The test pack with the named ActionTypes' framings replaced."""
+
+    return replace(LOADED_PACK, framings={**LOADED_PACK.framings, **framings})
+
+
+# Closing an account is the client's own act, so a pack must give it a step
+# the bank's letter states before a status conflict can include it.
+BANK_MAY_CLOSE = with_framings(
+    CLOSE_DEPOSIT_ACCOUNT=(Framing("BANK", "letter"),)
+)
 
 
 def move(referent: NodeId, session: int, action_type: str) -> MutateCommand:

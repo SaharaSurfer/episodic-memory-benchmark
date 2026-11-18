@@ -51,6 +51,14 @@ class Reason(Enum):
     PAIR_ALREADY_WRITTEN = "pair_already_written"
     INVALID_VALUE = "invalid_value"
     UNTRUE_DISCLOSURE = "untrue_disclosure"
+    UNEQUAL_AUTHORITY = "unequal_authority"
+    SPEAKER_TWICE = "speaker_twice"
+    CONTESTED_VALUES_EQUAL = "contested_values_equal"
+    CONTESTED_VALUE_IS_CURRENT = "contested_value_is_current"
+    NO_WRITER = "no_writer"
+    WRITER_GATE_FAILED = "writer_gate_failed"
+    NO_CONTESTABLE_FRAMING = "no_contestable_framing"
+    INITIATOR_NOT_SHARED = "initiator_not_shared"
     ANCHOR_SAME_ZONE = "anchor_same_zone"
     UNCHANGED_VALUE = "unchanged_value"
 
@@ -97,6 +105,7 @@ def check(
         or refuse_unfit_endpoints(command, registry, pack)
         or refuse_second_write(command, writes, registry)
         or refuse_invalid_values(command, registry, pack)
+        or refuse_illegal_contest(command, registry, pack)
         or refuse_anchor_same_zone(command, registry, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
@@ -250,6 +259,92 @@ def refuse_invalid_values(
         cls = relations.get(relation)
         if cls is None or not isinstance(value, cls) or not value.is_valid():
             return Refusal(3, Reason.INVALID_VALUE)
+
+    return None
+
+
+def refuse_illegal_contest(
+    command: EventCommand, registry: Registry, pack: LoadedPack
+) -> Refusal | None:
+    """Refuse a contested write its sources, values or writers do not allow."""
+
+    if not isinstance(command, ConflictingDoubleDisclosureCommand):
+        return None
+
+    entry = registry.entry(command.referent)
+    # The referent clause runs first and has refused a missing referent.
+    assert entry is not None
+
+    return (
+        _refuse_contest_sources(command, pack)
+        or _refuse_contest_values(command, entry)
+        or _refuse_contest_writers(command, entry, pack)
+    )
+
+
+def _refuse_contest_values(
+    command: ConflictingDoubleDisclosureCommand, entry: Entry
+) -> Refusal | None:
+    """Refuse two equal values, or one the pair already holds."""
+
+    if command.a == command.b:
+        return Refusal(5, Reason.CONTESTED_VALUES_EQUAL)
+
+    # Only the current value: the registry keeps no earlier versions, so
+    # whoever draws the two values must avoid those.
+    current = entry.values.get(command.relation)
+    if current is not None and current.value in (command.a, command.b):
+        return Refusal(5, Reason.CONTESTED_VALUE_IS_CURRENT)
+
+    return None
+
+
+def _refuse_contest_writers(
+    command: ConflictingDoubleDisclosureCommand,
+    entry: Entry,
+    pack: LoadedPack,
+) -> Refusal | None:
+    """Refuse values no pair of unstated, co-initiated ActionTypes writes."""
+
+    # Nothing can write from a conflict, but that is not why a pair already
+    # contested stays closed, so this clause does not give the refusal.
+    current = entry.values.get(command.relation)
+    if current is not None and isinstance(current.value, Contested):
+        return None
+
+    writers = []
+    for value in (command.a, command.b):
+        writer = _find_writer(entry, command.relation, value, pack)
+        if writer is None:
+            return Refusal(5, Reason.NO_WRITER)
+        if not _passes(entry, writer.gate):
+            return Refusal(5, Reason.WRITER_GATE_FAILED)
+        if not pack.passes_owner_rule(writer.name):
+            return Refusal(5, Reason.NO_CONTESTABLE_FRAMING)
+        writers.append(writer.name)
+
+    # The command names the initiator, since two framings may share several.
+    first, second = writers
+    if command.initiator not in pack.shared_initiators(first, second):
+        return Refusal(5, Reason.INITIATOR_NOT_SHARED)
+
+    return None
+
+
+def _refuse_contest_sources(
+    command: ConflictingDoubleDisclosureCommand, pack: LoadedPack
+) -> Refusal | None:
+    """Refuse sources of unequal authority, or one speaker named twice."""
+
+    first, second = (pack.sources[source] for source in command.sources)
+
+    if first.authority != second.authority:
+        return Refusal(5, Reason.UNEQUAL_AUTHORITY)
+
+    # Two letters are two messages, one person giving two figures is a
+    # self-correction.
+    if first.id == second.id and first.kind is SourceKind.SPEAKER:
+        return Refusal(5, Reason.SPEAKER_TWICE)
 
     return None
 
@@ -636,18 +731,28 @@ def _contest_records(
 def _writer(
     entry: Entry, relation: str, value: ValueClass, pack: LoadedPack
 ) -> MutateAction:
-    """The ActionType that would write the value over the pair's current."""
+    """The ActionType that writes the value, raising if none does."""
 
-    stamped = entry.values.get(relation)
-    action = None
-    if stamped is not None and not isinstance(stamped.value, Contested):
-        action = pack.action_for(entry.type, relation, (stamped.value, value))
+    action = _find_writer(entry, relation, value, pack)
 
-    # The check lets this through, but a disclosure cannot go unframed.
+    # Only a pair already contested gets here, and a disclosure cannot go
+    # unframed.
     if action is None:
         raise LookupError(f"no ActionType writes {value} to {relation}")
 
     return action
+
+
+def _find_writer(
+    entry: Entry, relation: str, value: ValueClass, pack: LoadedPack
+) -> MutateAction | None:
+    """The ActionType that would write the value over the pair's current."""
+
+    stamped = entry.values.get(relation)
+    if stamped is None or isinstance(stamped.value, Contested):
+        return None
+
+    return pack.action_for(entry.type, relation, (stamped.value, value))
 
 
 def _disclosures(

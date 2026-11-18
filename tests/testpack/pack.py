@@ -1,6 +1,7 @@
 from mbench.packs.spec import (
     Actor,
     EntityType,
+    Framing,
     InitAction,
     Linker,
     LoadedPack,
@@ -130,6 +131,28 @@ ROLE_FILTERS = (
     ),
 )
 
+_CLIENT_STATES = Framing(CLIENT.name, "customer")
+_BANK_STATES = Framing(BANK.name, "operator")
+_BANK_WRITES = Framing(BANK.name, "letter")
+
+# Every way each ActionType occurs in the pack's errands. One that names no
+# document is stated by its initiator's speaker.
+FRAMINGS = {
+    "OPEN_DEPOSIT_ACCOUNT": (_CLIENT_STATES,),
+    # The bank issues on its own, or the client asks and the operator says so.
+    "ISSUE_CARD": (_BANK_STATES, Framing(CLIENT.name, "operator")),
+    "REPRICE_DEPOSIT_ACCOUNT": (_BANK_WRITES,),
+    "CHANGE_ACCOUNT_FEE": (_BANK_WRITES,),
+    "FREEZE_DEPOSIT_ACCOUNT": (_BANK_STATES,),
+    "UNFREEZE_DEPOSIT_ACCOUNT": (_BANK_STATES,),
+    "CLOSE_DEPOSIT_ACCOUNT": (_CLIENT_STATES,),
+    "ACTIVATE_CARD": (_CLIENT_STATES,),
+    # The client locks a card, or the bank does on a fraud report.
+    "LOCK_CARD": (_CLIENT_STATES, _BANK_STATES),
+    "UNLOCK_CARD": (_CLIENT_STATES,),
+    "CLOSE_CARD": (_CLIENT_STATES,),
+}
+
 LOADED_PACK = LoadedPack(
     entity_types={
         entity_type.name: entity_type
@@ -165,4 +188,5 @@ LOADED_PACK = LoadedPack(
     role_filters={
         role_filter.name: role_filter for role_filter in ROLE_FILTERS
     },
+    framings=FRAMINGS,
 )

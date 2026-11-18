@@ -17,6 +17,7 @@ from mbench.core.records.log import CONTEST, Disclosure, MutateEvent
 from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import ValueClass
 from tests.core.world import (
+    BANK_MAY_CLOSE,
     MISSING,
     OPENED_IN,
     OPENING_RATE,
@@ -26,6 +27,7 @@ from tests.core.world import (
     disclosures_in,
     move,
     reprice,
+    status_contest,
 )
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
@@ -79,23 +81,15 @@ def test_accepting_gives_one_contest_mutate_and_a_disclosure_per_value() -> (
 def test_each_disclosure_is_framed_by_the_action_writing_its_own_value() -> (
     None
 ):
-    world = World()
+    world = World(BANK_MAY_CLOSE)
     account = world.open()
-    command = ConflictingDoubleDisclosureCommand(
-        session=CONTESTED_IN,
-        initiator="CLIENT",
-        referent=account,
-        relation="hasStatus",
-        a=FROZEN,
-        b=CLOSED,
-        sources=("letter", "email"),
-    )
+    command = status_contest(account, CONTESTED_IN, FROZEN, CLOSED)
 
     disclosures = disclosures_in(world.accept(command))
 
     assert [(d.value, d.action_type, d.initiator) for d in disclosures] == [
-        (FROZEN, "FREEZE_DEPOSIT_ACCOUNT", "CLIENT"),
-        (CLOSED, "CLOSE_DEPOSIT_ACCOUNT", "CLIENT"),
+        (FROZEN, "FREEZE_DEPOSIT_ACCOUNT", "BANK"),
+        (CLOSED, "CLOSE_DEPOSIT_ACCOUNT", "BANK"),
     ]
 
 
