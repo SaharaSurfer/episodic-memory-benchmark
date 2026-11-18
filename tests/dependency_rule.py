@@ -1,13 +1,41 @@
 import ast
+import re
 from pathlib import Path
 from typing import NamedTuple
 
+from mbench.packs.spec import LoadedPack
+
 ALLOWED_PACK_MODULE = "spec"
+WORD = re.compile(r"[A-Za-z_]\w*")
 
 
 class ForbiddenImport(NamedTuple):
     importer: str
     imported: str
+
+
+class WrittenName(NamedTuple):
+    module: str
+    name: str
+
+
+def declared_names(pack: LoadedPack) -> set[str]:
+    """Every name the pack declares, its value classes' tags included."""
+
+    types = pack.entity_types.values()
+
+    return {
+        *pack.entity_types,
+        *(relation for t in types for relation in t.relations),
+        *(cls.tag for t in types for cls in t.relations.values()),
+        *(link for t in types for link in t.links),
+        *pack.action_types,
+        *pack.role_filters,
+        *pack.actors,
+        *pack.speakers,
+        *pack.sources,
+        pack.owner,
+    }
 
 
 def pack_imports_beyond_spec(package_root: Path) -> list[ForbiddenImport]:
@@ -34,6 +62,27 @@ def pack_imports_beyond_spec(package_root: Path) -> list[ForbiddenImport]:
                 forbidden.append(ForbiddenImport(importer, imported))
 
     return forbidden
+
+
+def pack_names_written(
+    package_root: Path, names: set[str]
+) -> list[WrittenName]:
+    """The names as whole words in modules outside the concrete packs."""
+
+    written: list[WrittenName] = []
+
+    # Reading the text, not the syntax tree, finds a name wherever it is
+    # written: an identifier, an attribute, inside a string or in a comment.
+    for path in sorted(package_root.rglob("*.py")):
+        relative = path.relative_to(package_root)
+        if relative.parts[0] == "packs" and len(relative.parts) > 2:
+            continue
+
+        module, _ = _module_and_package(package_root.name, relative)
+        words = WORD.findall(path.read_text())
+        written.extend(WrittenName(module, w) for w in words if w in names)
+
+    return written
 
 
 def _module_and_package(package: str, relative: Path) -> tuple[str, list[str]]:

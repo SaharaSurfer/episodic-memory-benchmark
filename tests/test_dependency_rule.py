@@ -1,8 +1,27 @@
-import ast
 from pathlib import Path
 
-from tests.dependency_rule import ForbiddenImport, pack_imports_beyond_spec
-from tests.testpack.pack import LOADED_PACK
+import pytest
+
+from mbench.packs.spec import (
+    Actor,
+    EntityType,
+    InitAction,
+    LoadedPack,
+    RoleFilter,
+    Source,
+    SourceKind,
+    Speaker,
+)
+from tests.dependency_rule import (
+    ForbiddenImport,
+    WrittenName,
+    declared_names,
+    pack_imports_beyond_spec,
+    pack_names_written,
+)
+from tests.testpack.pack import LOADED_PACK as FINANCE_SUBSET
+from tests.valuegate.pack import LOADED_PACK as VALUE_GATE_FIXTURE
+from tests.valuegate.pack import WickLength
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "mbench"
 
@@ -112,43 +131,93 @@ def test_importing_pack_code_other_than_the_spec_is_reported(
     ]
 
 
-def _distinctive_test_pack_names() -> set[str]:
-    pack = LOADED_PACK
-    names = {
-        *pack.entity_types,
-        *(r for t in pack.entity_types.values() for r in t.relations),
-        *(link for t in pack.entity_types.values() for link in t.links),
-        *pack.action_types,
-        *pack.role_filters,
-        *pack.actors,
-        *pack.speakers,
-        *pack.sources,
-        pack.owner,
+def test_every_kind_of_name_a_pack_declares_is_listed() -> None:
+    lamp = EntityType(
+        "LAMP",
+        relations={"wickLength": WickLength},
+        links={"hangsFrom": frozenset({"LAMP"})},
+    )
+    pack = LoadedPack(
+        entity_types={lamp.name: lamp},
+        action_types={"HANG_LAMP": InitAction("HANG_LAMP", lamp.name)},
+        actors={"KEEPER": Actor("KEEPER")},
+        speakers={"guide": Speaker("guide", represents="KEEPER")},
+        sources={
+            "guide": Source("guide", SourceKind.SPEAKER, authority=1),
+            "lamp_log": Source("lamp_log", SourceKind.DOCUMENT, authority=1),
+        },
+        owner="VISITOR",
+        role_filters={"LIT_LAMP": RoleFilter("LIT_LAMP", lamp.name)},
+    )
+
+    assert declared_names(pack) == {
+        "LAMP",
+        "wickLength",
+        "wick_length",
+        "hangsFrom",
+        "HANG_LAMP",
+        "KEEPER",
+        "guide",
+        "lamp_log",
+        "VISITOR",
+        "LIT_LAMP",
     }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "LANTERN = 1\n",
+        "def f(x):\n    return x.LANTERN\n",
+        'X = "LANTERN"\n',
+        'X = "no such LANTERN here"\n',
+        "# the LANTERN\n",
+    ],
+    ids=["identifier", "attribute", "string", "inside_a_string", "comment"],
+)
+def test_a_pack_name_is_reported_however_it_is_written(
+    tmp_path: Path, source: str
+) -> None:
+    root = _package(tmp_path, source)
+
+    assert pack_names_written(root, {"LANTERN"}) == [
+        WrittenName("mbench.core.legality", "LANTERN")
+    ]
+
+
+def test_a_pack_name_in_the_pack_spec_is_reported(tmp_path: Path) -> None:
+    root = _package(tmp_path, "")
+    _write(root, "packs/spec.py", "LANTERN = 1\n")
+
+    assert pack_names_written(root, {"LANTERN"}) == [
+        WrittenName("mbench.packs.spec", "LANTERN")
+    ]
+
+
+def test_a_concrete_pack_may_write_its_own_names(tmp_path: Path) -> None:
+    root = _package(tmp_path, "")
+    _write(root, "packs/finance/pack.py", "LANTERN = 1\n")
+
+    assert pack_names_written(root, {"LANTERN"}) == []
+
+
+def test_a_word_merely_containing_a_pack_name_is_not_reported(
+    tmp_path: Path,
+) -> None:
+    root = _package(tmp_path, "LANTERNS = 1\n")
+
+    assert pack_names_written(root, {"LANTERN"}) == []
+
+
+def _distinctive_test_pack_names() -> set[str]:
+    names = declared_names(FINANCE_SUBSET) | declared_names(VALUE_GATE_FIXTURE)
 
     # A plain word such as "kind" or "email" can mean anything in other code,
     # so finding one there says nothing about knowing the pack.
     return {n for n in names if not (n.isalpha() and n.islower())}
 
 
-def _pack_agnostic_modules() -> list[Path]:
-    # A concrete pack, a subpackage of packs, spells out its own names, no
-    # other module may know them.
-    return [
-        path
-        for path in sorted(PACKAGE_ROOT.rglob("*.py"))
-        if path.relative_to(PACKAGE_ROOT).parts[0] != "packs"
-        or len(path.relative_to(PACKAGE_ROOT).parts) == 2
-    ]
-
-
 def test_no_test_pack_name_is_written_outside_a_concrete_pack() -> None:
     names = _distinctive_test_pack_names()
-    written = [
-        (path.relative_to(PACKAGE_ROOT), node.value)
-        for path in _pack_agnostic_modules()
-        for node in ast.walk(ast.parse(path.read_text()))
-        if isinstance(node, ast.Constant) and node.value in names
-    ]
 
-    assert written == []
+    assert pack_names_written(PACKAGE_ROOT, names) == []
