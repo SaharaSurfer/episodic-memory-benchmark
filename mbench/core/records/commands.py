@@ -66,7 +66,24 @@ class AgreeingDoubleDisclosureCommand:
     sources: tuple[str, str]
 
 
+@dataclass(frozen=True)
+class ConflictingDoubleDisclosureCommand:
+    """A request to contest a pair: two sources state two different values."""
+
+    session: int
+    initiator: str
+    referent: NodeId
+    relation: str
+    a: ValueClass
+    b: ValueClass
+    # The first states a, the second b.
+    sources: tuple[str, str]
+
+
 type EventCommand = (
-    InitCommand | MutateCommand | AgreeingDoubleDisclosureCommand
+    InitCommand
+    | MutateCommand
+    | AgreeingDoubleDisclosureCommand
+    | ConflictingDoubleDisclosureCommand
 )
 type Command = EventCommand | ReadCommand

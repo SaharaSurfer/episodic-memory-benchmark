@@ -9,6 +9,7 @@ from mbench.core.legality.predicate import Refusal, decide
 from mbench.core.records.commands import (
     AgreeingDoubleDisclosureCommand,
     Command,
+    ConflictingDoubleDisclosureCommand,
     InitCommand,
     MutateCommand,
     ReadCommand,
@@ -234,6 +235,26 @@ def agree(
         action_type="REPRICE_DEPOSIT_ACCOUNT",
         referent=referent,
         value=InterestRate(Decimal(rate)),
+        sources=sources,
+    )
+
+
+def contest(
+    referent: NodeId,
+    session: int,
+    a: str,
+    b: str,
+    sources: tuple[str, str] = ("letter", "email"),
+) -> ConflictingDoubleDisclosureCommand:
+    """A command in which two sources state different rates for the account."""
+
+    return ConflictingDoubleDisclosureCommand(
+        session=session,
+        initiator="BANK",
+        referent=referent,
+        relation="hasInterestRate",
+        a=InterestRate(Decimal(a)),
+        b=InterestRate(Decimal(b)),
         sources=sources,
     )
 

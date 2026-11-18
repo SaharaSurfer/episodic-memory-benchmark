@@ -6,11 +6,16 @@ from itertools import chain
 from mbench.core.records.commands import Command
 from mbench.core.records.frozen import freeze
 from mbench.core.records.ids import NodeId
+from mbench.core.values.contested import WorldValue
 from mbench.core.values.protocol import ValueClass
 
 # The action type of a disclosure that re-states current values, stated by no
 # event and so named by the core rather than by a pack's ActionTypes.
 READ = "READ"
+
+# The action type of the event writing a conflict, which no ActionType could
+# write: each of its two values is framed by the ActionType that writes it.
+CONTEST = "CONTEST"
 
 
 @dataclass(frozen=True)
@@ -47,7 +52,7 @@ class MutateEvent:
     initiator: str
     action_type: str
     referent: NodeId
-    writes: Mapping[str, ValueClass]
+    writes: Mapping[str, WorldValue]
 
     def __post_init__(self) -> None:
         """Hold the one write read-only, refusing any other number of them."""

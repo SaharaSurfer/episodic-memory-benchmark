@@ -6,6 +6,7 @@ from mbench.core.folds.registry import Entry, Registry, Stamped, is_live
 from mbench.core.records.commands import (
     AgreeingDoubleDisclosureCommand,
     Command,
+    ConflictingDoubleDisclosureCommand,
     EventCommand,
     InitCommand,
     MutateCommand,
@@ -13,6 +14,7 @@ from mbench.core.records.commands import (
 )
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import (
+    CONTEST,
     READ,
     AcceptedCommand,
     Disclosure,
@@ -22,6 +24,7 @@ from mbench.core.records.log import (
     MutateEvent,
     Record,
 )
+from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
     Gate,
@@ -85,7 +88,7 @@ def check(
     if isinstance(command, ReadCommand):
         return refuse_missing_entity(command, registry)
 
-    writes = _writes(command, pack)
+    writes = _world_writes(command, pack)
     _check_links(command, pack)
     _check_sources(command, pack)
 
@@ -93,7 +96,7 @@ def check(
         refuse_unfit_referent(command, registry, pack)
         or refuse_unfit_endpoints(command, registry, pack)
         or refuse_second_write(command, writes, registry)
-        or refuse_invalid_values(command, writes, pack)
+        or refuse_invalid_values(command, registry, pack)
         or refuse_anchor_same_zone(command, registry, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
@@ -109,9 +112,11 @@ def _build_records(
 
     if isinstance(command, ReadCommand):
         return _read_records(command, registry, allocator)
+    if isinstance(command, ConflictingDoubleDisclosureCommand):
+        return _contest_records(command, registry, pack, allocator)
     if isinstance(command, AgreeingDoubleDisclosureCommand):
         return _mutate_records(
-            command, _writes(command, pack), command.sources, allocator
+            command, _plain_writes(command, pack), command.sources, allocator
         )
 
     source = default_source(command, pack)
@@ -119,7 +124,7 @@ def _build_records(
         return _init_records(command, source, allocator)
 
     return _mutate_records(
-        command, _writes(command, pack), (source,), allocator
+        command, _plain_writes(command, pack), (source,), allocator
     )
 
 
@@ -154,11 +159,15 @@ def refuse_unfit_referent(
     if isinstance(command, InitCommand):
         return None
 
-    action = pack.action_types[command.action_type]
     entry = registry.entry(command.referent)
-
     if entry is None:
         return Refusal(1, Reason.REFERENT_MISSING)
+
+    # It names no ActionType, so it has no referent type or gate of its own.
+    if isinstance(command, ConflictingDoubleDisclosureCommand):
+        return None if is_live(entry, pack) else Refusal(1, Reason.NOT_LIVE)
+
+    action = pack.action_types[command.action_type]
     if entry.type != action.referent_type:
         return Refusal(1, Reason.REFERENT_WRONG_TYPE)
 
@@ -218,7 +227,7 @@ def refuse_missing_entity(
 
 
 def refuse_second_write(
-    command: EventCommand, writes: Mapping[str, ValueClass], registry: Registry
+    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
 ) -> Refusal | None:
     """Refuse a write to a pair already written in the command's session."""
 
@@ -230,14 +239,14 @@ def refuse_second_write(
 
 
 def refuse_invalid_values(
-    command: EventCommand, writes: Mapping[str, ValueClass], pack: LoadedPack
+    command: EventCommand, registry: Registry, pack: LoadedPack
 ) -> Refusal | None:
     """Refuse a value its relation's class does not hold, or holds invalid."""
 
-    action = pack.action_types[command.action_type]
-    relations = pack.entity_types[action.referent_type].relations
+    entity_type = _written_type(command, registry, pack)
+    relations = pack.entity_types[entity_type].relations
 
-    for relation, value in writes.items():
+    for relation, value in _stated_values(command, pack):
         cls = relations.get(relation)
         if cls is None or not isinstance(value, cls) or not value.is_valid():
             return Refusal(3, Reason.INVALID_VALUE)
@@ -270,7 +279,7 @@ def refuse_anchor_same_zone(
 
 
 def refuse_unchanged_value(
-    command: EventCommand, writes: Mapping[str, ValueClass], registry: Registry
+    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
 ) -> Refusal | None:
     """Refuse a write of the value its pair already holds."""
 
@@ -319,14 +328,17 @@ def _same_part(
     return new == existing
 
 
-def admits(current: ValueClass, stated: ValueClass) -> bool:
+def admits(current: WorldValue, stated: ValueClass) -> bool:
     """Whether a pair holding the current value may be said to hold another."""
+
+    if isinstance(current, Contested):
+        return stated in current.members
 
     return stated == current
 
 
 def _current(
-    command: EventCommand, writes: Mapping[str, ValueClass], registry: Registry
+    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
 ) -> Mapping[str, Stamped]:
     """The current stamped value of each pair the command writes, if any."""
 
@@ -345,10 +357,50 @@ def _current(
     }
 
 
-def _writes(
+def _written_type(
+    command: EventCommand, registry: Registry, pack: LoadedPack
+) -> str:
+    """The type of the entity the command writes to."""
+
+    if isinstance(command, ConflictingDoubleDisclosureCommand):
+        entry = registry.entry(command.referent)
+        # The referent clause runs first and has refused a missing referent.
+        assert entry is not None
+        return entry.type
+
+    return pack.action_types[command.action_type].referent_type
+
+
+def _world_writes(
     command: EventCommand, pack: LoadedPack
-) -> Mapping[str, ValueClass]:
+) -> Mapping[str, WorldValue]:
     """The relation-to-value map the command's event will write."""
+
+    if isinstance(command, ConflictingDoubleDisclosureCommand):
+        return {command.relation: Contested(command.a, command.b)}
+
+    return _plain_writes(command, pack)
+
+
+def _stated_values(
+    command: EventCommand, pack: LoadedPack
+) -> tuple[tuple[str, ValueClass], ...]:
+    """Each relation and plain value the command puts into the world."""
+
+    if isinstance(command, ConflictingDoubleDisclosureCommand):
+        return (
+            (command.relation, command.a),
+            (command.relation, command.b),
+        )
+
+    return tuple(_plain_writes(command, pack).items())
+
+
+def _plain_writes(
+    command: InitCommand | MutateCommand | AgreeingDoubleDisclosureCommand,
+    pack: LoadedPack,
+) -> Mapping[str, ValueClass]:
+    """The plain relation-to-value map a non-conflict's event will write."""
 
     action = pack.action_types[command.action_type]
     if isinstance(command, InitCommand) and isinstance(action, InitAction):
@@ -393,15 +445,19 @@ def _check_links(command: EventCommand, pack: LoadedPack) -> None:
 
 
 def _check_sources(command: EventCommand, pack: LoadedPack) -> None:
-    """Raise unless a double disclosure names two declared sources."""
+    """Raise unless a double disclosure names declared sources."""
 
-    if not isinstance(command, AgreeingDoubleDisclosureCommand):
+    if not isinstance(
+        command,
+        AgreeingDoubleDisclosureCommand | ConflictingDoubleDisclosureCommand,
+    ):
         return
 
-    # No clause covers the sources a command names, so a wrong pair is the
-    # caller's bug, raised rather than refused.
+    # No clause covers the sources an agreeing pair names, so a wrong pair is
+    # the caller's bug, raised rather than refused. A conflict may come from
+    # one document twice.
     first, second = command.sources
-    if first == second:
+    if isinstance(command, AgreeingDoubleDisclosureCommand) and first == second:
         raise ValueError(f"{first} is named twice, not two different sources")
 
     unknown = set(command.sources) - pack.sources.keys()
@@ -531,10 +587,67 @@ def _mutate_records(
             disclosure
             for source in sources
             for disclosure in _disclosures(
-                event, event.referent, event.writes, source, allocator
+                event, event.referent, writes, source, allocator
             )
         ),
     )
+
+
+def _contest_records(
+    command: ConflictingDoubleDisclosureCommand,
+    registry: Registry,
+    pack: LoadedPack,
+    allocator: IdAllocator,
+) -> tuple[Record, ...]:
+    """The CONTEST event, then each source's disclosure of its own value."""
+
+    entry = registry.entry(command.referent)
+    # The check has refused a contested write on a missing referent.
+    assert entry is not None
+
+    event = MutateEvent(
+        session=command.session,
+        initiator=command.initiator,
+        action_type=CONTEST,
+        referent=command.referent,
+        writes=_world_writes(command, pack),
+    )
+
+    return (
+        event,
+        *(
+            Disclosure(
+                session=event.session,
+                source=source,
+                action_type=_writer(entry, command.relation, value, pack).name,
+                initiator=event.initiator,
+                entity=event.referent,
+                relation=command.relation,
+                value=value,
+                node_id=allocator.allocate(),
+            )
+            for source, value in zip(
+                command.sources, (command.a, command.b), strict=True
+            )
+        ),
+    )
+
+
+def _writer(
+    entry: Entry, relation: str, value: ValueClass, pack: LoadedPack
+) -> MutateAction:
+    """The ActionType that would write the value over the pair's current."""
+
+    stamped = entry.values.get(relation)
+    action = None
+    if stamped is not None and not isinstance(stamped.value, Contested):
+        action = pack.action_for(entry.type, relation, (stamped.value, value))
+
+    # The check lets this through, but a disclosure cannot go unframed.
+    if action is None:
+        raise LookupError(f"no ActionType writes {value} to {relation}")
+
+    return action
 
 
 def _disclosures(
@@ -581,8 +694,18 @@ def _read_records(
             initiator=command.initiator,
             entity=command.entity,
             relation=relation,
-            value=current.value,
+            value=_readable(current.value),
             node_id=allocator.allocate(),
         )
         for relation, current in entry.values.items()
     )
+
+
+def _readable(current: WorldValue) -> ValueClass:
+    """The value a READ states, which a conflict, having no truth, is not."""
+
+    # The check lets this through, but a disclosure states one plain value.
+    if isinstance(current, Contested):
+        raise ValueError("a contested value cannot be read")
+
+    return current

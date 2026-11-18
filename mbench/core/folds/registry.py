@@ -9,7 +9,7 @@ from mbench.core.records.log import (
     MutateEvent,
     Record,
 )
-from mbench.core.values.protocol import ValueClass
+from mbench.core.values.contested import WorldValue
 from mbench.packs.spec import LoadedPack
 
 
@@ -17,7 +17,7 @@ from mbench.packs.spec import LoadedPack
 class Stamped:
     """A current value and the session that last wrote it."""
 
-    value: ValueClass
+    value: WorldValue
     session: int
 
 
