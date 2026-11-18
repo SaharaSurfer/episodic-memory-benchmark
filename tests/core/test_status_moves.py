@@ -9,14 +9,24 @@ from mbench.core.records.commands import InitCommand, MutateCommand
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import AcceptedCommand, InitEvent, MutateEvent
 from mbench.packs.spec import EntityType, InitAction, MutateAction
-from tests.core.world import MISSING, World, change_fee, move, reprice
+from tests.core.world import (
+    MISSING,
+    REPORTED_IN,
+    World,
+    change_fee,
+    move,
+    reprice,
+)
 from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK
 from tests.testpack.values import (
     ACTIVE,
+    APPROVED,
     CLOSED,
+    DENIED,
     FROZEN,
     INACTIVE,
     LOCKED,
+    UNDER_REVIEW,
     LifecycleStatus,
     MonetaryAmount,
 )
@@ -276,6 +286,35 @@ def test_an_inactive_card_cannot_be_locked_or_unlocked(
     card = world.issue_card(world.open())
 
     outcome = world.decide(move(card, 3, action_type))
+
+    assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
+
+
+def test_a_case_moves_through_review_appeal_and_closing() -> None:
+    world = World()
+    case = world.open_case()
+    moves = (
+        ("REVIEW_CASE", UNDER_REVIEW),
+        ("DENY_CASE", DENIED),
+        ("REVIEW_CASE", UNDER_REVIEW),
+        ("APPROVE_CASE", APPROVED),
+        ("CLOSE_CASE", CLOSED),
+    )
+
+    for session, (action, status) in enumerate(moves, start=REPORTED_IN + 1):
+        world.accept(move(case, session, action))
+
+        assert _status(world, case) == status
+
+
+@pytest.mark.parametrize(
+    "action", ["APPROVE_CASE", "DENY_CASE"], ids=["approve", "deny"]
+)
+def test_a_case_is_decided_only_under_review(action: str) -> None:
+    world = World()
+    case = world.open_case()
+
+    outcome = world.decide(move(case, REPORTED_IN + 1, action))
 
     assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
 

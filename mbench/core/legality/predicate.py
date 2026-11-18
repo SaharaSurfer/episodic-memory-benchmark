@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
@@ -27,7 +27,6 @@ from mbench.core.records.log import (
 from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
-    ActionType,
     Gate,
     InitAction,
     Linker,
@@ -61,6 +60,7 @@ class Reason(Enum):
     NO_CONTESTABLE_FRAMING = "no_contestable_framing"
     INITIATOR_NOT_SHARED = "initiator_not_shared"
     PAIR_SEALED = "pair_sealed"
+    ENTITY_SEALED = "entity_sealed"
     ANCHOR_SAME_ZONE = "anchor_same_zone"
     UNCHANGED_VALUE = "unchanged_value"
 
@@ -111,6 +111,7 @@ def check(
         or refuse_invalid_values(command, registry, pack)
         or refuse_illegal_contest(command, registry, pack)
         or refuse_sealed_write(command, writes, registry)
+        or refuse_sealed_entity(command, registry, pack)
         or refuse_anchor_same_zone(command, registry, pack)
         or refuse_unchanged_value(command, writes, registry)
     )
@@ -186,7 +187,7 @@ def refuse_unfit_referent(
         return Refusal(1, Reason.REFERENT_WRONG_TYPE)
 
     gate = action.gate if isinstance(action, MutateAction) else {}
-    if not _passes(entry, _judgeable_gate(gate, entry, action)):
+    if not _passes(entry, gate):
         return Refusal(1, Reason.GATE_FAILED)
 
     # A gate that reads the status has named the statuses it admits, a
@@ -196,18 +197,6 @@ def refuse_unfit_referent(
         return Refusal(1, Reason.NOT_LIVE)
 
     return None
-
-
-def _judgeable_gate(gate: Gate, entry: Entry, action: ActionType) -> Gate:
-    """The gate, less the pair the action writes if that pair is contested."""
-
-    # A gate cannot judge a conflict, and sealing refuses the write to it.
-    if isinstance(action, MutateAction) and _is_contested(
-        entry, action.relation
-    ):
-        return {r: v for r, v in gate.items() if r != action.relation}
-
-    return gate
 
 
 def refuse_unfit_endpoints(
@@ -371,6 +360,64 @@ def refuse_sealed_write(
     """Refuse a write to a pair holding a contested value."""
 
     return _refuse_sealed(_current(command, writes, registry).values())
+
+
+def refuse_sealed_entity(
+    command: EventCommand, registry: Registry, pack: LoadedPack
+) -> Refusal | None:
+    """Refuse an event that relies on a value with no truth to read."""
+
+    if isinstance(command, InitCommand):
+        sealed = _init_relies_on_conflict(command, registry, pack)
+    else:
+        entry = registry.entry(command.referent)
+        # The referent clause runs first and has refused a missing referent.
+        assert entry is not None
+        sealed = _entity_is_sealed(entry, pack)
+
+    return Refusal(6, Reason.ENTITY_SEALED) if sealed else None
+
+
+def _init_relies_on_conflict(
+    command: InitCommand, registry: Registry, pack: LoadedPack
+) -> bool:
+    """Whether an endpoint is sealed, or its filter reads a contested status."""
+
+    for link, endpoint in command.links.items():
+        entry = registry.entry(endpoint)
+        # The endpoint clause runs first and has refused a missing endpoint.
+        assert entry is not None
+
+        if _entity_is_sealed(entry, pack):
+            return True
+
+        filter_name = command.filters.get(link)
+        if filter_name is not None and any(
+            _status_is_contested(other, pack)
+            for linker in pack.role_filters[filter_name].no_live_linkers
+            for other in _linkers(entry, linker, registry)
+        ):
+            return True
+
+    return False
+
+
+def _entity_is_sealed(entry: Entry, pack: LoadedPack) -> bool:
+    """Whether a relation legality reads holds a contested value."""
+
+    contested = {r for r in entry.values if _is_contested(entry, r)}
+    if not contested:
+        return False
+
+    return not contested.isdisjoint(pack.relations_legality_reads(entry.type))
+
+
+def _status_is_contested(entry: Entry, pack: LoadedPack) -> bool:
+    """Whether the entity's status holds a contested value."""
+
+    status = pack.entity_types[entry.type].status
+
+    return status is not None and _is_contested(entry, status)
 
 
 def refuse_sealed_read(
@@ -650,10 +697,16 @@ def _written_value(
 
 
 def _passes(entry: Entry, gate: Gate) -> bool:
-    """Whether the entry holds an admitted value for every relation gated."""
+    """Whether every relation gated is held, admitted or contested."""
 
+    # A gate cannot judge a conflict. The pack lists what gates read, so
+    # sealing refuses the command instead.
     return all(
-        relation in entry.values and entry.values[relation].value in admitted
+        relation in entry.values
+        and (
+            _is_contested(entry, relation)
+            or entry.values[relation].value in admitted
+        )
         for relation, admitted in gate.items()
     )
 
@@ -680,13 +733,25 @@ def _passes_filter(
 def _has_live_linker(
     entry: Entry, linker: Linker, registry: Registry, pack: LoadedPack
 ) -> bool:
-    """Whether a live entity points at the entry in the linker's way."""
+    """Whether an entity surely live points at the entry that way."""
 
+    # Whether a contested status is live has no answer, sealing refuses it.
     return any(
-        other.type == linker.entity_type
-        and other.links.get(linker.link) == entry.id
-        and is_live(other, pack)
+        is_live(other, pack) and not _status_is_contested(other, pack)
+        for other in _linkers(entry, linker, registry)
+    )
+
+
+def _linkers(
+    entry: Entry, linker: Linker, registry: Registry
+) -> Iterator[Entry]:
+    """The entities pointing at the entry in the linker's way."""
+
+    return (
+        other
         for other in registry.entries()
+        if other.type == linker.entity_type
+        and other.links.get(linker.link) == entry.id
     )
 
 

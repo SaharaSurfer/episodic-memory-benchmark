@@ -13,12 +13,14 @@ from mbench.packs.spec import (
 )
 from tests.testpack.values import (
     CardType,
+    CaseKind,
     DepositKind,
     InterestRate,
     LastFour,
     LifecycleStatus,
     MonetaryAmount,
     ProductName,
+    ReferenceNumber,
 )
 
 DEPOSIT_ACCOUNT = EntityType(
@@ -48,6 +50,20 @@ PAYMENT_CARD = EntityType(
     terminal=frozenset({LifecycleStatus("closed")}),
     links={"hasCorrespondingAccount": frozenset({DEPOSIT_ACCOUNT.name})},
     anchor=("cardType", "lastFour"),
+    nameable=True,
+)
+
+SERVICE_CASE = EntityType(
+    "SERVICE_CASE",
+    relations={
+        "kind": CaseKind,
+        "caseNumber": ReferenceNumber,
+        "hasStatus": LifecycleStatus,
+    },
+    status="hasStatus",
+    terminal=frozenset({LifecycleStatus("closed")}),
+    links={"isAbout": frozenset({PAYMENT_CARD.name, DEPOSIT_ACCOUNT.name})},
+    anchor=("kind", "caseNumber"),
     nameable=True,
 )
 
@@ -81,6 +97,18 @@ STATUS_MOVES = (
     _status_move(PAYMENT_CARD, "UNLOCK_CARD", {"locked"}, "active"),
     _status_move(
         PAYMENT_CARD, "CLOSE_CARD", {"inactive", "active", "locked"}, "closed"
+    ),
+    # A denied case can be reviewed again, on appeal.
+    _status_move(
+        SERVICE_CASE, "REVIEW_CASE", {"open", "denied"}, "under_review"
+    ),
+    _status_move(SERVICE_CASE, "APPROVE_CASE", {"under_review"}, "approved"),
+    _status_move(SERVICE_CASE, "DENY_CASE", {"under_review"}, "denied"),
+    _status_move(
+        SERVICE_CASE,
+        "CLOSE_CASE",
+        {"open", "under_review", "approved", "denied"},
+        "closed",
     ),
 )
 
@@ -151,12 +179,20 @@ FRAMINGS = {
     "LOCK_CARD": (_CLIENT_STATES, _BANK_STATES),
     "UNLOCK_CARD": (_CLIENT_STATES,),
     "CLOSE_CARD": (_CLIENT_STATES,),
+    # The client asks, and the operator opens the case and says so.
+    "REPORT_FRAUD": (Framing(CLIENT.name, "operator"),),
+    "REQUEST_CARD": (Framing(CLIENT.name, "operator"),),
+    # The bank works a case, and the client can appeal a denied one.
+    "REVIEW_CASE": (_BANK_STATES, _CLIENT_STATES),
+    "APPROVE_CASE": (_BANK_STATES,),
+    "DENY_CASE": (_BANK_STATES,),
+    "CLOSE_CASE": (_BANK_STATES,),
 }
 
 LOADED_PACK = LoadedPack(
     entity_types={
         entity_type.name: entity_type
-        for entity_type in (DEPOSIT_ACCOUNT, PAYMENT_CARD)
+        for entity_type in (DEPOSIT_ACCOUNT, PAYMENT_CARD, SERVICE_CASE)
     },
     action_types={
         "OPEN_DEPOSIT_ACCOUNT": InitAction(
@@ -168,6 +204,17 @@ LOADED_PACK = LoadedPack(
             "ISSUE_CARD",
             referent_type=PAYMENT_CARD.name,
             links={"hasCorrespondingAccount": {}},
+        ),
+        # What a case is about is the role filter's to narrow, if any.
+        "REPORT_FRAUD": InitAction(
+            "REPORT_FRAUD",
+            referent_type=SERVICE_CASE.name,
+            links={"isAbout": {}},
+        ),
+        "REQUEST_CARD": InitAction(
+            "REQUEST_CARD",
+            referent_type=SERVICE_CASE.name,
+            links={"isAbout": {}},
         ),
         "REPRICE_DEPOSIT_ACCOUNT": MutateAction(
             "REPRICE_DEPOSIT_ACCOUNT",

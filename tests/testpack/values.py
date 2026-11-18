@@ -13,6 +13,7 @@ from mbench.core.values.protocol import (
 
 CENT = Decimal("0.01")
 FOUR_DIGITS = re.compile(r"[0-9]{4}")
+FIVE_DIGITS = re.compile(r"[0-9]{5}")
 
 CHECKING_PRODUCTS = (
     "Everyday Checking",
@@ -104,22 +105,16 @@ class InterestRate(_TwoPlaceDecimal):
 
 
 @dataclass(frozen=True)
-class LastFour(ZonedValueClass):
-    """The last four digits of an account or card number."""
+class _DigitString(ZonedValueClass):
+    """A fixed number of digits, whose lookalikes are one slip away."""
 
-    tag: ClassVar[str] = "last_four"
-    scope: ClassVar[UniquenessScope] = UniquenessScope.SCENARIO
+    DIGITS: ClassVar[re.Pattern[str]]
     payload: str
 
     def is_valid(self) -> bool:
-        """Exactly four ASCII digits."""
+        """Exactly the class's number of ASCII digits."""
 
-        return FOUR_DIGITS.fullmatch(self.payload) is not None
-
-    def render(self) -> str:
-        """As the dialogue says it: "ending 4471"."""
-
-        return f"ending {self.payload}"
+        return self.DIGITS.fullmatch(self.payload) is not None
 
     def zone(self, other: Self) -> Zone:
         """Same if equal, near if a lookalike, far otherwise."""
@@ -133,10 +128,38 @@ class LastFour(ZonedValueClass):
         return Zone.FAR
 
     def near(self) -> Iterator[Self]:
-        """Every lookalike of these four digits."""
+        """Every lookalike of these digits."""
 
         for payload in sorted(_digit_lookalikes(self.payload)):
             yield type(self)(payload)
+
+
+@dataclass(frozen=True)
+class LastFour(_DigitString):
+    """The last four digits of an account or card number."""
+
+    tag: ClassVar[str] = "last_four"
+    scope: ClassVar[UniquenessScope] = UniquenessScope.SCENARIO
+    DIGITS: ClassVar[re.Pattern[str]] = FOUR_DIGITS
+
+    def render(self) -> str:
+        """As the dialogue says it: "ending 4471"."""
+
+        return f"ending {self.payload}"
+
+
+@dataclass(frozen=True)
+class ReferenceNumber(_DigitString):
+    """The five-digit number a service case goes by."""
+
+    tag: ClassVar[str] = "reference_number"
+    scope: ClassVar[UniquenessScope] = UniquenessScope.TYPE
+    DIGITS: ClassVar[re.Pattern[str]] = FIVE_DIGITS
+
+    def render(self) -> str:
+        """As the dialogue says it: "case 48213"."""
+
+        return f"case {self.payload}"
 
 
 def _digit_lookalikes(digits: str) -> set[str]:
@@ -170,9 +193,9 @@ class _Classification(ZonedValueClass):
         return self.payload in self.MEMBERS
 
     def render(self) -> str:
-        """The kind as a word."""
+        """The kind as words: "fraud report"."""
 
-        return self.payload
+        return self.payload.replace("_", " ")
 
     def zone(self, other: Self) -> Zone:
         """Same if equal, far otherwise: no kind looks like another."""
@@ -199,6 +222,16 @@ class CardType(_Classification):
 
     tag: ClassVar[str] = "card_type"
     MEMBERS: ClassVar[frozenset[str]] = frozenset({"credit", "debit"})
+
+
+@dataclass(frozen=True)
+class CaseKind(_Classification):
+    """What a service case is opened for."""
+
+    tag: ClassVar[str] = "case_kind"
+    MEMBERS: ClassVar[frozenset[str]] = frozenset(
+        {"dispute", "fraud_report", "card_request"}
+    )
 
 
 @dataclass(frozen=True)
@@ -263,3 +296,7 @@ FROZEN = LifecycleStatus("frozen")
 CLOSED = LifecycleStatus("closed")
 INACTIVE = LifecycleStatus("inactive")
 LOCKED = LifecycleStatus("locked")
+OPEN = LifecycleStatus("open")
+UNDER_REVIEW = LifecycleStatus("under_review")
+APPROVED = LifecycleStatus("approved")
+DENIED = LifecycleStatus("denied")

@@ -234,6 +234,10 @@ class LoadedPack:
     framings: Mapping[str, tuple[Framing, ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Per entity type, the relations an INIT's derivations read of it.
+    derivation_reads: Mapping[str, frozenset[str]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def __post_init__(self) -> None:
         """Hold every table read-only, and refuse names that do not match."""
@@ -246,6 +250,7 @@ class LoadedPack:
             "sources",
             "role_filters",
             "framings",
+            "derivation_reads",
         ):
             object.__setattr__(
                 self, table, MappingProxyType(dict(getattr(self, table)))
@@ -339,6 +344,40 @@ class LoadedPack:
             entity_type: frozenset(relations)
             for entity_type, relations in reads.items()
         }
+
+    def relations_legality_reads(self, entity_type: str) -> frozenset[str]:
+        """The type's relations that some check or derivation reads."""
+
+        filter_reads = (
+            self.relations_read(name).get(entity_type, frozenset())
+            for name in self.role_filters
+        )
+
+        return frozenset(
+            self._status_relations(entity_type).union(
+                self._gated_relations(entity_type),
+                self.derivation_reads.get(entity_type, frozenset()),
+                *filter_reads,
+            )
+        )
+
+    def _gated_relations(self, entity_type: str) -> set[str]:
+        """The relations of the type that an action or endpoint gate reads."""
+
+        gated: set[str] = set()
+
+        for action in self.action_types.values():
+            if isinstance(action, MutateAction):
+                if action.referent_type == entity_type:
+                    gated.update(action.gate)
+                continue
+
+            targets = self.entity_types[action.referent_type].links
+            for link, gate in action.links.items():
+                if entity_type in targets[link]:
+                    gated.update(gate)
+
+        return gated
 
     def _status_relations(self, entity_type: str) -> set[str]:
         """The type's status relation, none for a type without one."""

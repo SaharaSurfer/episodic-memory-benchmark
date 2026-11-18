@@ -1,13 +1,9 @@
 from collections.abc import Callable
-from decimal import Decimal
 
 import pytest
 
 from mbench.core.legality.predicate import Reason, Refusal
-from mbench.core.records.commands import (
-    Command,
-    ConflictingDoubleDisclosureCommand,
-)
+from mbench.core.records.commands import Command
 from mbench.core.records.ids import NodeId
 from tests.core.world import (
     BANK_MAY_CLOSE,
@@ -16,6 +12,7 @@ from tests.core.world import (
     agree,
     change_fee,
     contest,
+    fee_contest,
     issue,
     move,
     read,
@@ -24,7 +21,7 @@ from tests.core.world import (
     with_gate,
 )
 from tests.testpack.pack import LOADED_PACK
-from tests.testpack.values import ACTIVE, CLOSED, FROZEN, MonetaryAmount
+from tests.testpack.values import ACTIVE, CLOSED, FROZEN
 
 CONTESTED_IN = 7
 LATER = CONTESTED_IN + 2
@@ -41,20 +38,6 @@ def _contested_account(world: World) -> NodeId:
     world.accept(contest(account, CONTESTED_IN, A, B))
 
     return account
-
-
-def _fee_contest(account: NodeId) -> ConflictingDoubleDisclosureCommand:
-    """A later command in which two sources state different fees."""
-
-    return ConflictingDoubleDisclosureCommand(
-        session=LATER,
-        initiator="BANK",
-        referent=account,
-        relation="hasMonthlyFee",
-        a=MonetaryAmount(Decimal("7")),
-        b=MonetaryAmount(Decimal("9")),
-        sources=("letter", "email"),
-    )
 
 
 def test_a_later_write_to_the_contested_pair_is_refused() -> None:
@@ -150,7 +133,7 @@ def test_a_later_agreeing_double_disclosure_on_the_pair_is_refused() -> None:
     [
         lambda account: change_fee(account, LATER, "7"),
         lambda account: move(account, LATER, "FREEZE_DEPOSIT_ACCOUNT"),
-        _fee_contest,
+        lambda account: fee_contest(account, LATER),
     ],
     ids=["a value", "the status", "a contested write"],
 )

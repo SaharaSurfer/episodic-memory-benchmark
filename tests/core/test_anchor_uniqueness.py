@@ -9,14 +9,22 @@ from mbench.packs.spec import EntityType, LoadedPack
 from tests.core.world import (
     CARD_WRITES,
     LAST_FOURS,
+    REPORTED_IN,
     World,
     issue,
     move,
     open_account,
     opening_lacking,
+    report_fraud,
 )
 from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK, PAYMENT_CARD
-from tests.testpack.values import DepositKind, LastFour, ProductName
+from tests.testpack.values import (
+    CaseKind,
+    DepositKind,
+    LastFour,
+    ProductName,
+    ReferenceNumber,
+)
 
 SAME_ZONE = Refusal(clause=7, reason=Reason.ANCHOR_SAME_ZONE)
 
@@ -166,6 +174,36 @@ def test_an_anchor_part_one_side_lacks_cannot_clash(
     world.accept(opening_lacking(1, *first_lacks))
 
     outcome = world.decide(opening_lacking(2, *second_lacks))
+
+    assert not isinstance(outcome, Refusal)
+
+
+def test_a_case_with_the_same_kind_and_number_is_refused() -> None:
+    world = World()
+    card = world.issue_card(world.open())
+    world.open_case(card)
+
+    outcome = world.decide(report_fraud(card, REPORTED_IN + 1))
+
+    assert outcome == SAME_ZONE
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"kind": CaseKind("dispute")},
+        {"caseNumber": ReferenceNumber("70195")},
+    ],
+    ids=["kind", "number"],
+)
+def test_a_case_differing_in_one_anchor_part_is_accepted(
+    changes: dict[str, CaseKind | ReferenceNumber],
+) -> None:
+    world = World()
+    card = world.issue_card(world.open())
+    world.open_case(card)
+
+    outcome = world.decide(report_fraud(card, REPORTED_IN + 1, **changes))
 
     assert not isinstance(outcome, Refusal)
 

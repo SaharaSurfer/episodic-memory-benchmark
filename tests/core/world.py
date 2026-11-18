@@ -23,25 +23,42 @@ from mbench.core.records.log import (
     Record,
 )
 from mbench.core.values.protocol import ValueClass
-from mbench.packs.spec import Framing, Gate, LoadedPack, MutateAction
+from mbench.packs.spec import (
+    EntityType,
+    Framing,
+    Gate,
+    InitAction,
+    LoadedPack,
+    MutateAction,
+    RoleFilter,
+)
 from tests.core.records.handmade import OPEN_ACCOUNT
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import (
     ACTIVE,
     INACTIVE,
+    OPEN,
     CardType,
+    CaseKind,
     DepositKind,
     InterestRate,
     LastFour,
     LifecycleStatus,
     MonetaryAmount,
     ProductName,
+    ReferenceNumber,
 )
 
 OPENED_IN = 1
 OPENING_RATE = "4.25"
 ISSUED_IN = 2
+REPORTED_IN = 3
 CARD_LINK = "hasCorrespondingAccount"
+CASE_LINK = "isAbout"
+FEE = "hasMonthlyFee"
+
+# A gate reading a relation nothing else reads.
+FEE_GATE: Gate = {FEE: frozenset({MonetaryAmount(Decimal("5"))})}
 
 # No entity ever holds this id.
 MISSING = NodeId("zzzzz")
@@ -71,6 +88,16 @@ CARD_WRITES: Mapping[str, ValueClass] = MappingProxyType(
         "cardType": CardType("debit"),
         "lastFour": LastFour("9012"),
         "hasStatus": INACTIVE,
+    }
+)
+
+# Read-only for the same reason. The kind is written by hand here, though the
+# pack will fix it by the INIT.
+CASE_WRITES: Mapping[str, ValueClass] = MappingProxyType(
+    {
+        "kind": CaseKind("fraud_report"),
+        "caseNumber": ReferenceNumber("48213"),
+        "hasStatus": OPEN,
     }
 )
 
@@ -139,6 +166,13 @@ class World:
 
         return _created_id(self.accept(issue(account, ISSUED_IN)))
 
+    def open_case(self, card: NodeId | None = None) -> NodeId:
+        """Report fraud on the card, else a new one, give the case's id."""
+
+        about = self.issue_card(self.open()) if card is None else card
+
+        return _created_id(self.accept(report_fraud(about, REPORTED_IN)))
+
     def _next_last_four(self) -> LastFour:
         """The last four no account of this world has taken yet."""
 
@@ -193,6 +227,21 @@ def issue(account: NodeId, session: int) -> InitCommand:
         source="operator",
         writes=CARD_WRITES,
         links={CARD_LINK: account},
+    )
+
+
+def report_fraud(
+    about: NodeId, session: int, **changes: ValueClass
+) -> InitCommand:
+    """A command opening a fraud case about the entity."""
+
+    return InitCommand(
+        session=session,
+        initiator="CLIENT",
+        action_type="REPORT_FRAUD",
+        source="operator",
+        writes={**CASE_WRITES, **changes},
+        links={CASE_LINK: about},
     )
 
 
@@ -260,6 +309,22 @@ def contest(
     )
 
 
+def fee_contest(
+    referent: NodeId, session: int
+) -> ConflictingDoubleDisclosureCommand:
+    """A command in which two sources state different monthly fees."""
+
+    return ConflictingDoubleDisclosureCommand(
+        session=session,
+        initiator="BANK",
+        referent=referent,
+        relation="hasMonthlyFee",
+        a=MonetaryAmount(Decimal("7")),
+        b=MonetaryAmount(Decimal("9")),
+        sources=("letter", "email"),
+    )
+
+
 def status_contest(
     referent: NodeId, session: int, a: LifecycleStatus, b: LifecycleStatus
 ) -> ConflictingDoubleDisclosureCommand:
@@ -299,8 +364,48 @@ def with_gate(pack: LoadedPack, name: str, gate: Gate) -> LoadedPack:
     return replace(pack, action_types={**pack.action_types, name: gated})
 
 
+def with_issue_gate(pack: LoadedPack, gate: Gate) -> LoadedPack:
+    """The pack with the gate on a card's account extended."""
+
+    action = pack.action_types["ISSUE_CARD"]
+    assert isinstance(action, InitAction)
+    extended = {**action.links[CARD_LINK], **gate}
+
+    return with_action(
+        pack, replace(action, links={**action.links, CARD_LINK: extended})
+    )
+
+
+def with_action(
+    pack: LoadedPack, action: InitAction | MutateAction
+) -> LoadedPack:
+    """The pack with the ActionType added, or replacing its namesake."""
+
+    return replace(
+        pack, action_types={**pack.action_types, action.name: action}
+    )
+
+
+def with_entity_type(pack: LoadedPack, entity_type: EntityType) -> LoadedPack:
+    """The pack with the type added, or replacing its namesake."""
+
+    return replace(
+        pack,
+        entity_types={**pack.entity_types, entity_type.name: entity_type},
+    )
+
+
+def with_role_filter(pack: LoadedPack, role_filter: RoleFilter) -> LoadedPack:
+    """The pack with the role filter added, or replacing its namesake."""
+
+    return replace(
+        pack,
+        role_filters={**pack.role_filters, role_filter.name: role_filter},
+    )
+
+
 def move(referent: NodeId, session: int, action_type: str) -> MutateCommand:
-    """A command taking the account through a status move, naming no value."""
+    """A command taking the entity through a status move, naming no value."""
 
     return MutateCommand(
         session=session,

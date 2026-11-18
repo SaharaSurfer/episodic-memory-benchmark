@@ -23,11 +23,14 @@ from tests.core.records.handmade import disclosure_of
 from tests.core.world import (
     CARD_LINK,
     CARD_WRITES,
+    CASE_LINK,
     ISSUED_IN,
     MISSING,
+    REPORTED_IN,
     World,
     issue,
     move,
+    report_fraud,
 )
 from tests.testpack.pack import (
     CARD_ELIGIBLE_ACCOUNT,
@@ -37,9 +40,11 @@ from tests.testpack.pack import (
     LOADED_PACK,
     NO_LIVE_CARD,
     PAYMENT_CARD,
+    SERVICE_CASE,
 )
 from tests.testpack.values import (
     ACTIVE,
+    CaseKind,
     DepositKind,
     LastFour,
     MonetaryAmount,
@@ -431,3 +436,20 @@ def test_a_link_disclosure_is_true_only_of_the_linked_target() -> None:
     assert stating(card, account) is None
     assert stating(card, other) == untrue
     assert stating(account, other) == untrue
+
+
+def test_a_card_request_opens_a_case_about_an_account() -> None:
+    world = World()
+    account = world.open()
+    command = replace(
+        report_fraud(account, REPORTED_IN, kind=CaseKind("card_request")),
+        action_type="REQUEST_CARD",
+    )
+
+    event, *_ = world.accept(command)
+
+    assert isinstance(event, InitEvent)
+    entry = world.registry.entry(event.new_id)
+    assert entry is not None
+    assert entry.type == SERVICE_CASE.name
+    assert entry.links[CASE_LINK] == account

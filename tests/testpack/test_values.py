@@ -6,12 +6,14 @@ import pytest
 from mbench.core.values.protocol import UniquenessScope
 from tests.testpack.values import (
     CardType,
+    CaseKind,
     DepositKind,
     InterestRate,
     LastFour,
     LifecycleStatus,
     MonetaryAmount,
     ProductName,
+    ReferenceNumber,
 )
 from tests.value_class_contract import (
     ClassCase,
@@ -99,6 +101,39 @@ CASES: list[ClassCase[Any]] = [
         far_pairs=[(CardType("credit"), CardType("debit"))],
     ),
     ClassCase(
+        ReferenceNumber,
+        valid=[
+            ReferenceNumber("48213"),
+            ReferenceNumber("00000"),
+            ReferenceNumber("48231"),
+        ],
+        invalid=[
+            ReferenceNumber("4821"),
+            ReferenceNumber("482130"),
+            ReferenceNumber("48a13"),
+            ReferenceNumber("４８２１３"),
+        ],
+        near_pairs=[
+            (ReferenceNumber("48213"), ReferenceNumber("48214")),
+            (ReferenceNumber("48213"), ReferenceNumber("98213")),
+            (ReferenceNumber("48213"), ReferenceNumber("48231")),
+        ],
+        far_pairs=[
+            (ReferenceNumber("48213"), ReferenceNumber("48320")),
+            (ReferenceNumber("12345"), ReferenceNumber("54321")),
+        ],
+    ),
+    ClassCase(
+        CaseKind,
+        valid=[
+            CaseKind("dispute"),
+            CaseKind("fraud_report"),
+            CaseKind("card_request"),
+        ],
+        invalid=[CaseKind("fraud report"), CaseKind("Dispute")],
+        far_pairs=[(CaseKind("dispute"), CaseKind("fraud_report"))],
+    ),
+    ClassCase(
         ProductName,
         valid=[ProductName("Everyday Checking"), ProductName("Goal Saver")],
         invalid=[ProductName("everyday checking"), ProductName("")],
@@ -142,6 +177,8 @@ def test_amounts_and_rates_render_as_the_dialogue_says_them() -> None:
     assert InterestRate(Decimal("26.4")).render() == "26.40%"
     assert LastFour("4471").render() == "ending 4471"
     assert LifecycleStatus("under_review").render() == "under review"
+    assert ReferenceNumber("48213").render() == "case 48213"
+    assert CaseKind("fraud_report").render() == "fraud report"
 
 
 def test_last_four_near_zone_is_every_one_digit_change_and_swap() -> None:
@@ -159,3 +196,7 @@ def test_an_amount_too_long_to_hold_two_places_is_refused_not_raised() -> None:
 def test_last_four_is_unique_in_the_scenario_and_others_have_no_scope() -> None:
     assert LastFour.scope is UniquenessScope.SCENARIO
     assert InterestRate.scope is UniquenessScope.NONE
+
+
+def test_a_case_number_is_unique_within_its_type() -> None:
+    assert ReferenceNumber.scope is UniquenessScope.TYPE
