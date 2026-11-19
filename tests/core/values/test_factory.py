@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Self
 import pytest
 
 from mbench.core.folds.registry import Registry, fold_world
-from mbench.core.legality.predicate import Refusal, decide
+from mbench.core.legality.predicate import Reason, Refusal, decide
 from mbench.core.records.commands import (
     ConflictingDoubleDisclosureCommand,
     InitCommand,
@@ -54,7 +54,7 @@ from tests.core.world import (
     with_action,
     with_entity_type,
 )
-from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK
+from tests.testpack.pack import DEPOSIT_ACCOUNT, LOADED_PACK, PAYMENT_CARD
 from tests.testpack.samplers import CHECKING, SAVINGS
 from tests.testpack.values import (
     ACTIVE,
@@ -931,6 +931,34 @@ def test_a_pool_of_taken_identifiers_ends_in_a_refusal() -> None:
     outcome = Factory(0, pack).fill(_unfilled_card(account), world.registry)
 
     assert outcome == FillRefusal(FillReason.IDENTIFIER_TAKEN)
+
+
+def test_an_init_whose_links_do_not_match_its_action_raises() -> None:
+    world = World()
+    account = world.open()
+    unlinked = replace(_unfilled_card(account), links={})
+
+    with pytest.raises(ValueError, match="ISSUE_CARD takes links"):
+        Factory(0, LOADED_PACK).fill(unlinked, world.registry)
+
+
+def test_an_init_with_a_missing_endpoint_is_left_to_decide() -> None:
+    # Every card is issued inactive, so a status anchor clashes on every draw.
+    pack = with_entity_type(
+        LOADED_PACK,
+        replace(PAYMENT_CARD, anchor=("hasStatus",), nameable=False),
+    )
+    world = World(pack)
+    account = world.open()
+    world.issue_card(account)
+    clashing = Factory(0, pack).fill(_unfilled_card(account), world.registry)
+
+    filled = Factory(0, pack).fill(_unfilled_card(MISSING), world.registry)
+
+    assert clashing == FillRefusal(FillReason.ANCHOR_SAME_ZONE)
+
+    assert isinstance(filled, InitCommand)
+    assert world.decide(filled) == Refusal(Reason.ENDPOINT_MISSING)
 
 
 def test_a_negative_redraw_limit_raises() -> None:

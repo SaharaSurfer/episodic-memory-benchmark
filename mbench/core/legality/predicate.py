@@ -124,30 +124,6 @@ def refuse_untrue_disclosure(
     return None if holds else Refusal(Reason.UNTRUE_DISCLOSURE)
 
 
-def refuse_anchor_same_zone(
-    command: EventCommand, registry: Registry, pack: LoadedPack
-) -> Refusal | None:
-    """Refuse an INIT whose anchor is in the same zone as one of its type's."""
-
-    if not isinstance(command, InitCommand):
-        return None
-
-    action = _init_action(command, pack)
-
-    # The factory asks before its endpoints are known good, so a derivation
-    # whose source is missing gives nothing rather than a refusal.
-    endpoints = {
-        link: entry
-        for link, endpoint in command.links.items()
-        if (entry := registry.entry(endpoint)) is not None
-    }
-    writes = {**command.writes, **_derived_values(action, endpoints)}
-
-    return _refuse_anchor(
-        pack.entity_types[action.referent_type], writes, registry
-    )
-
-
 @dataclass(frozen=True)
 class _Read:
     """A READ the check has passed, with the entity it states."""
@@ -760,8 +736,9 @@ def _derived_values(
 ) -> dict[str, ValueClass]:
     """The values the INIT's derivations give, skipping any with no answer."""
 
-    # The factory asks before every endpoint is known good, so a derivation
-    # may have nothing to read. `_check_derivations` holds the final say.
+    # A clause may yet refuse the INIT, and a refused INIT needs no derived
+    # values, so one with nothing to read is skipped here rather than raised.
+    # `_check_derivations` has the final say on an INIT the clauses pass.
     derived = {}
 
     for relation, derivation in action.derives.items():

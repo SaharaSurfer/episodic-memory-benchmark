@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 from mbench.core.folds.registry import Entry, Registry
-from mbench.core.legality.predicate import refuse_anchor_same_zone
+from mbench.core.legality.predicate import Reason, check
 from mbench.core.records.commands import InitCommand, MutateCommand
 from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import UniquenessScope, ValueClass
@@ -26,6 +26,13 @@ class FillReason(Enum):
     # The clash that remained when the redraws ran out.
     IDENTIFIER_TAKEN = "identifier_taken"
     ANCHOR_SAME_ZONE = "anchor_same_zone"
+
+
+# The refusals a new draw can clear, each with the reason the factory gives
+# when the redraws run out. Any other refusal leaves the command to `decide`.
+_REDRAWN: Mapping[Reason, FillReason] = {
+    Reason.ANCHOR_SAME_ZONE: FillReason.ANCHOR_SAME_ZONE,
+}
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,9 @@ class Factory:
     ) -> Fillable | FillRefusal:
         """The command with its values set, or why it cannot have them."""
 
+        # A fill holds only at the registry it was drawn against, so the
+        # caller decides the command there, and a new placement needs a new
+        # fill.
         action = self._pack.action_types[command.action_type]
 
         if isinstance(command, InitCommand) and isinstance(action, InitAction):
@@ -68,7 +78,8 @@ class Factory:
         ):
             return self._fill_mutate(command, action, registry)
 
-        # The predicate raises the same for a command of the wrong shape.
+        # How to fill follows from the shape, so a command of the wrong shape
+        # cannot be filled.
         raise TypeError(f"{type(command).__name__} cannot take {action.name}")
 
     def _fill_init(
@@ -89,13 +100,15 @@ class Factory:
             if writes is None:
                 return FillRefusal(FillReason.NOTHING_LEFT_TO_DRAW)
 
-            filled = replace(command, writes=writes)
             if _repeats_identifier(writes, taken):
                 clash = FillReason.IDENTIFIER_TAKEN
-            elif refuse_anchor_same_zone(filled, registry, self._pack):
-                clash = FillReason.ANCHOR_SAME_ZONE
-            else:
+                continue
+
+            filled = replace(command, writes=writes)
+            refusal = check(filled, registry, self._pack)
+            if refusal is None or refusal.reason not in _REDRAWN:
                 return filled
+            clash = _REDRAWN[refusal.reason]
 
         return FillRefusal(clash)
 
