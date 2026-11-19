@@ -36,6 +36,7 @@ from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
     ByType,
     Copy,
+    EntityType,
     Gate,
     InitAction,
     LoadedPack,
@@ -88,13 +89,11 @@ def decide(
 ) -> AcceptedCommand | Refusal:
     """The command with the records it produces, or why it is refused."""
 
-    refusal = check(command, registry, pack)
-    if refusal is not None:
-        return refusal
+    resolved = _checked(command, registry, pack)
+    if isinstance(resolved, Refusal):
+        return resolved
 
-    records = _build_records(command, registry, pack, allocator)
-
-    return AcceptedCommand(command, records)
+    return AcceptedCommand(command, resolved.records(allocator))
 
 
 def check(
@@ -102,110 +101,384 @@ def check(
 ) -> Refusal | None:
     """Why the command is illegal at this registry, if it is."""
 
+    resolved = _checked(command, registry, pack)
+
+    return resolved if isinstance(resolved, Refusal) else None
+
+
+def refuse_untrue_disclosure(
+    disclosure: Disclosure, registry: Registry
+) -> Refusal | None:
+    """Refuse a disclosure of a value or link the world does not hold."""
+
+    entry = registry.entry(disclosure.entity)
+    if entry is None:
+        return Refusal(Reason.UNTRUE_DISCLOSURE)
+
+    if isinstance(disclosure.value, Link):
+        holds = entry.links.get(disclosure.relation) == disclosure.value.target
+    else:
+        current = entry.values.get(disclosure.relation)
+        holds = current is not None and _admits(current.value, disclosure.value)
+
+    return None if holds else Refusal(Reason.UNTRUE_DISCLOSURE)
+
+
+def refuse_anchor_same_zone(
+    command: EventCommand, registry: Registry, pack: LoadedPack
+) -> Refusal | None:
+    """Refuse an INIT whose anchor is in the same zone as one of its type's."""
+
+    if not isinstance(command, InitCommand):
+        return None
+
+    action = _init_action(command, pack)
+
+    # The factory asks before its endpoints are known good, so a derivation
+    # whose source is missing gives nothing rather than a refusal.
+    endpoints = {
+        link: entry
+        for link, endpoint in command.links.items()
+        if (entry := registry.entry(endpoint)) is not None
+    }
+    writes = {**command.writes, **_derived_values(action, endpoints)}
+
+    return _refuse_anchor(
+        pack.entity_types[action.referent_type], writes, registry
+    )
+
+
+@dataclass(frozen=True)
+class _Read:
+    """A READ the check has passed, with the entity it states."""
+
+    command: ReadCommand
+    entry: Entry
+
+    def records(self, allocator: IdAllocator) -> tuple[Record, ...]:
+        """The READ's disclosures of the entity's current values."""
+
+        # Each value is copied from the registry, so these disclosures always
+        # pass `refuse_untrue_disclosure`, only a disclosure written by other
+        # means, as in a stored log, can fail it.
+        return tuple(
+            Disclosure(
+                session=self.command.session,
+                source=self.command.source,
+                action_type=READ,
+                initiator=self.command.initiator,
+                entity=self.command.entity,
+                relation=relation,
+                value=_readable(current.value),
+                node_id=allocator.allocate(),
+            )
+            for relation, current in self.entry.values.items()
+        )
+
+
+@dataclass(frozen=True)
+class _Mutate:
+    """A plain write of one value on a referent: a MUTATE or agreeing pair."""
+
+    command: MutateCommand | AgreeingDoubleDisclosureCommand
+    writes: Mapping[str, ValueClass]
+    sources: tuple[str, ...]
+    entry: Entry
+    # The current stamped value of each pair it writes, if any.
+    current: Mapping[str, Stamped]
+
+    def records(self, allocator: IdAllocator) -> tuple[Record, ...]:
+        """The MUTATE event, then one disclosure of its value per source."""
+
+        event = MutateEvent(
+            session=self.command.session,
+            initiator=self.command.initiator,
+            action_type=self.command.action_type,
+            referent=self.command.referent,
+            writes=self.writes,
+        )
+
+        return (
+            event,
+            *(
+                disclosure
+                for source in self.sources
+                for disclosure in _disclosures(
+                    event, event.referent, self.writes, source, allocator
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _Contest:
+    """A contested write, with the ActionType that writes each of its values."""
+
+    command: ConflictingDoubleDisclosureCommand
+    writes: Mapping[str, WorldValue]
+    writers: tuple[MutateAction, MutateAction]
+
+    def records(self, allocator: IdAllocator) -> tuple[Record, ...]:
+        """The CONTEST event, then each source's disclosure of its own value."""
+
+        command = self.command
+        event = MutateEvent(
+            session=command.session,
+            initiator=command.initiator,
+            action_type=CONTEST,
+            referent=command.referent,
+            writes=self.writes,
+        )
+
+        return (
+            event,
+            *(
+                Disclosure(
+                    session=event.session,
+                    source=source,
+                    action_type=writer.name,
+                    initiator=event.initiator,
+                    entity=event.referent,
+                    relation=command.relation,
+                    value=value,
+                    node_id=allocator.allocate(),
+                )
+                for source, value, writer in zip(
+                    command.sources,
+                    (command.a, command.b),
+                    self.writers,
+                    strict=True,
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class _Init:
+    """An INIT with its endpoints and what derives from them."""
+
+    command: InitCommand
+    action: InitAction
+    source: str
+    endpoints: Mapping[str, Entry]
+    # The links whose role filter cannot judge its endpoint for a conflict.
+    undecided: frozenset[str]
+    derived: Mapping[str, ValueClass]
+    copied: Mapping[str, NodeId]
+    # The command's values and the derived ones: all the event writes.
+    writes: Mapping[str, ValueClass]
+
+    def records(self, allocator: IdAllocator) -> tuple[Record, ...]:
+        """The INIT event, then a default disclosure per value and link."""
+
+        event = InitEvent(
+            session=self.command.session,
+            initiator=self.command.initiator,
+            action_type=self.command.action_type,
+            new_id=allocator.allocate(),
+            writes=self.writes,
+            links={**self.command.links, **self.copied},
+        )
+
+        links = {link: Link(target) for link, target in event.links.items()}
+
+        return (
+            event,
+            *_disclosures(
+                event,
+                event.new_id,
+                {**event.writes, **links},
+                self.source,
+                allocator,
+            ),
+        )
+
+
+type _Resolved = _Read | _Mutate | _Contest | _Init
+
+
+def _checked(
+    command: Command, registry: Registry, pack: LoadedPack
+) -> Refusal | _Resolved:
+    """What the command will do, or why it is illegal at this registry."""
+
     _check_names(command, pack)
 
     if isinstance(command, ReadCommand):
-        return refuse_missing_entity(command, registry) or refuse_sealed_read(
-            command, registry
-        )
+        return _checked_read(command, registry)
+    if isinstance(command, ConflictingDoubleDisclosureCommand):
+        return _checked_contest(command, registry, pack)
+    if isinstance(command, InitCommand):
+        return _checked_init(command, registry, pack)
 
-    writes = _world_writes(command, pack)
-    _check_links(command, pack)
-    _check_fixed_values(command, pack)
-    _check_no_derived_writes(command, pack)
-
-    refusal = (
-        refuse_unfit_referent(command, registry, pack)
-        or refuse_unfit_endpoints(command, registry, pack)
-        or refuse_second_write(command, writes, registry)
-        or refuse_invalid_values(command, registry, pack)
-        or refuse_illegal_contest(command, registry, pack)
-        or refuse_sealed_write(command, writes, registry)
-        or refuse_sealed_entity(command, registry, pack)
-        or refuse_anchor_same_zone(command, registry, pack)
-        or refuse_unchanged_value(command, writes, registry)
-    )
-    if refusal is None:
-        _check_derivations(command, registry, pack)
-
-    return refusal
+    return _checked_mutate(command, registry, pack)
 
 
-def _build_records(
-    command: Command,
+def _checked_read(command: ReadCommand, registry: Registry) -> Refusal | _Read:
+    """The READ with its entity, unless that is missing or sealed."""
+
+    entry = registry.entry(command.entity)
+    if entry is None:
+        return Refusal(Reason.REFERENT_MISSING)
+
+    # A READ states every value of its entity, so one contested pair is enough.
+    return _refuse_sealed(entry.values.values()) or _Read(command, entry)
+
+
+def _checked_mutate(
+    command: MutateCommand | AgreeingDoubleDisclosureCommand,
     registry: Registry,
     pack: LoadedPack,
-    allocator: IdAllocator,
-) -> tuple[Record, ...]:
-    """The records of a command the check has passed, drawing their ids."""
+) -> Refusal | _Mutate:
+    """The plain write resolved, or the first clause that refuses it."""
 
-    if isinstance(command, ReadCommand):
-        return _read_records(command, registry, allocator)
-    if isinstance(command, ConflictingDoubleDisclosureCommand):
-        return _contest_records(command, registry, pack, allocator)
+    action = _mutate_action(command, pack)
+    writes = {action.relation: _written_value(command, action)}
+
+    sources: tuple[str, ...]
     if isinstance(command, AgreeingDoubleDisclosureCommand):
-        return _mutate_records(
-            command, _plain_writes(command, pack), command.sources, allocator
-        )
+        sources = command.sources
+    else:
+        sources = (_default_source(command.initiator, command.source, pack),)
 
-    source = default_source(
-        command.initiator,
-        command.source,
-        pack.speakers.values(),
-        pack.sources.values(),
+    mutate = _resolve_referent(command, action, writes, sources, registry, pack)
+    if isinstance(mutate, Refusal):
+        return mutate
+
+    relations = pack.entity_types[action.referent_type].relations
+    refusal = (
+        _refuse_second_write(command.session, mutate.current)
+        or _refuse_invalid_values(relations, writes.items())
+        or _refuse_sealed(mutate.current.values())
+        or _refuse_sealed_entity(mutate.entry, pack)
+        or _refuse_unchanged_value(writes, mutate.current)
     )
-    if isinstance(command, InitCommand):
-        return _init_records(command, source, registry, pack, allocator)
 
-    return _mutate_records(
-        command, _plain_writes(command, pack), (source,), allocator
+    return refusal or mutate
+
+
+def _checked_contest(
+    command: ConflictingDoubleDisclosureCommand,
+    registry: Registry,
+    pack: LoadedPack,
+) -> Refusal | _Contest:
+    """The contested write resolved, or the first clause that refuses it."""
+
+    writes = {command.relation: Contested(command.a, command.b)}
+
+    entry = _contested_referent(command, registry, pack)
+    if isinstance(entry, Refusal):
+        return entry
+
+    current = _current(entry, writes)
+    relations = pack.entity_types[entry.type].relations
+    stated = ((command.relation, command.a), (command.relation, command.b))
+
+    # Sealing runs just before the writers: it refuses exactly a pair already
+    # contested, which no writer can write from, so the writers never see one
+    # and either order gives every command the same refusal.
+    refusal = (
+        _refuse_second_write(command.session, current)
+        or _refuse_invalid_values(relations, stated)
+        or _refuse_contest_sources(command, pack)
+        or _refuse_contest_values(command, entry)
+        or _refuse_sealed(current.values())
+    )
+    if refusal is not None:
+        return refusal
+
+    writers = _contest_writers(command, entry, pack)
+    if isinstance(writers, Refusal):
+        return writers
+
+    refusal = _refuse_sealed_entity(entry, pack) or _refuse_unchanged_value(
+        writes, current
     )
 
+    return refusal or _Contest(command, writes, writers)
 
-def refuse_unfit_referent(
-    command: EventCommand, registry: Registry, pack: LoadedPack
-) -> Refusal | None:
-    """Refuse a MUTATE on a missing, mistyped, gated-out or dead referent."""
 
-    # An INIT has no referent, only link endpoints, checked on their own.
-    if isinstance(command, InitCommand):
-        return None
+def _checked_init(
+    command: InitCommand, registry: Registry, pack: LoadedPack
+) -> Refusal | _Init:
+    """The INIT resolved, or the first clause that refuses it."""
+
+    action = _init_action(command, pack)
+    _check_links(command, action, pack)
+    _check_fixed_values(command, action)
+    _check_no_derived_writes(command, action)
+    source = _default_source(command.initiator, command.source, pack)
+
+    init = _resolve_endpoints(command, action, source, registry, pack)
+    if isinstance(init, Refusal):
+        return init
+
+    entity_type = pack.entity_types[action.referent_type]
+    refusal = (
+        _refuse_invalid_values(entity_type.relations, command.writes.items())
+        or _refuse_init_on_conflict(init, registry, pack)
+        or _refuse_anchor(entity_type, init.writes, registry)
+    )
+    if refusal is None:
+        _check_derivations(init, pack)
+
+    return refusal or init
+
+
+def _resolve_referent(
+    command: MutateCommand | AgreeingDoubleDisclosureCommand,
+    action: MutateAction,
+    writes: Mapping[str, ValueClass],
+    sources: tuple[str, ...],
+    registry: Registry,
+    pack: LoadedPack,
+) -> Refusal | _Mutate:
+    """Refuse a write on a missing, mistyped, gated-out or dead referent."""
+
+    entry = registry.entry(command.referent)
+    if entry is None:
+        return Refusal(Reason.REFERENT_MISSING)
+    if entry.type != action.referent_type:
+        return Refusal(Reason.REFERENT_WRONG_TYPE)
+    if not _passes(entry, action.gate):
+        return Refusal(Reason.GATE_FAILED)
+
+    # A gate that reads the status has named the statuses it admits, a
+    # terminal one included, so it, not liveness, decides.
+    status = pack.entity_types[entry.type].status
+    if status not in action.gate and not is_live(entry, pack):
+        return Refusal(Reason.NOT_LIVE)
+
+    return _Mutate(command, writes, sources, entry, _current(entry, writes))
+
+
+def _contested_referent(
+    command: ConflictingDoubleDisclosureCommand,
+    registry: Registry,
+    pack: LoadedPack,
+) -> Refusal | Entry:
+    """The contested pair's entity, unless it is missing or dead."""
 
     entry = registry.entry(command.referent)
     if entry is None:
         return Refusal(Reason.REFERENT_MISSING)
 
     # It names no ActionType, so it has no referent type or gate of its own.
-    if isinstance(command, ConflictingDoubleDisclosureCommand):
-        return None if is_live(entry, pack) else Refusal(Reason.NOT_LIVE)
-
-    action = pack.action_types[command.action_type]
-    if entry.type != action.referent_type:
-        return Refusal(Reason.REFERENT_WRONG_TYPE)
-
-    gate = action.gate if isinstance(action, MutateAction) else {}
-    if not _passes(entry, gate):
-        return Refusal(Reason.GATE_FAILED)
-
-    # A gate that reads the status has named the statuses it admits, a
-    # terminal one included, so it, not liveness, decides.
-    status = pack.entity_types[entry.type].status
-    if status not in gate and not is_live(entry, pack):
-        return Refusal(Reason.NOT_LIVE)
-
-    return None
+    return entry if is_live(entry, pack) else Refusal(Reason.NOT_LIVE)
 
 
-def refuse_unfit_endpoints(
-    command: EventCommand, registry: Registry, pack: LoadedPack
-) -> Refusal | None:
+def _resolve_endpoints(
+    command: InitCommand,
+    action: InitAction,
+    source: str,
+    registry: Registry,
+    pack: LoadedPack,
+) -> Refusal | _Init:
     """Refuse an INIT whose endpoint is missing, mistyped, gated or filtered."""
 
-    if not isinstance(command, InitCommand):
-        return None
-
-    action = _init_action(command, pack)
     targets = pack.entity_types[action.referent_type].links
+    endpoints = {}
+    undecided = set()
 
     # An endpoint need not be live: a replacement points at the closed card
     # it replaces. A gate or filter that wants a live one says so.
@@ -218,46 +491,48 @@ def refuse_unfit_endpoints(
             return Refusal(Reason.ENDPOINT_WRONG_TYPE)
         if not _passes(entry, action.links[link]):
             return Refusal(Reason.ENDPOINT_GATE_FAILED)
-        if _filter_verdict(command, link, entry, registry, pack) is (
-            Verdict.FAIL
-        ):
+
+        verdict = _filter_verdict(command, link, entry, registry, pack)
+        if verdict is Verdict.FAIL:
             return Refusal(Reason.ENDPOINT_FILTER_FAILED)
+        if verdict is Verdict.UNDECIDED:
+            undecided.add(link)
 
-    return None
+        endpoints[link] = entry
+
+    derived = _derived_values(action, endpoints)
+
+    return _Init(
+        command=command,
+        action=action,
+        source=source,
+        endpoints=endpoints,
+        undecided=frozenset(undecided),
+        derived=derived,
+        copied=_copied_links(action, endpoints),
+        writes={**command.writes, **derived},
+    )
 
 
-def refuse_missing_entity(
-    command: ReadCommand, registry: Registry
-) -> Refusal | None:
-    """Refuse a READ of an entity the world does not hold."""
-
-    if registry.entry(command.entity) is None:
-        return Refusal(Reason.REFERENT_MISSING)
-
-    return None
-
-
-def refuse_second_write(
-    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
+def _refuse_second_write(
+    session: int, current: Mapping[str, Stamped]
 ) -> Refusal | None:
     """Refuse a write to a pair already written in the command's session."""
 
-    for current in _current(command, writes, registry).values():
-        if current.session == command.session:
+    for stamped in current.values():
+        if stamped.session == session:
             return Refusal(Reason.PAIR_ALREADY_WRITTEN)
 
     return None
 
 
-def refuse_invalid_values(
-    command: EventCommand, registry: Registry, pack: LoadedPack
+def _refuse_invalid_values(
+    relations: Mapping[str, type[ValueClass]],
+    stated: Iterable[tuple[str, ValueClass]],
 ) -> Refusal | None:
     """Refuse a value its relation's class does not hold, or holds invalid."""
 
-    entity_type = _written_type(command, registry, pack)
-    relations = pack.entity_types[entity_type].relations
-
-    for relation, value in _stated_values(command, pack):
+    for relation, value in stated:
         if not _fits(relations, relation, value):
             return Refusal(Reason.INVALID_VALUE)
 
@@ -272,73 +547,6 @@ def _fits(
     cls = relations.get(relation)
 
     return cls is not None and isinstance(value, cls) and value.is_valid()
-
-
-def refuse_illegal_contest(
-    command: EventCommand, registry: Registry, pack: LoadedPack
-) -> Refusal | None:
-    """Refuse a contested write its sources, values or writers do not allow."""
-
-    if not isinstance(command, ConflictingDoubleDisclosureCommand):
-        return None
-
-    entry = registry.entry(command.referent)
-    # The referent clause runs first and has refused a missing referent.
-    assert entry is not None
-
-    return (
-        _refuse_contest_sources(command, pack)
-        or _refuse_contest_values(command, entry)
-        or _refuse_contest_writers(command, entry, pack)
-    )
-
-
-def _refuse_contest_values(
-    command: ConflictingDoubleDisclosureCommand, entry: Entry
-) -> Refusal | None:
-    """Refuse two equal values, or one the pair already holds."""
-
-    if command.a == command.b:
-        return Refusal(Reason.CONTESTED_VALUES_EQUAL)
-
-    # Only the current value: the registry keeps no earlier versions, so
-    # whoever draws the two values must avoid those.
-    current = entry.values.get(command.relation)
-    if current is not None and current.value in (command.a, command.b):
-        return Refusal(Reason.CONTESTED_VALUE_IS_CURRENT)
-
-    return None
-
-
-def _refuse_contest_writers(
-    command: ConflictingDoubleDisclosureCommand,
-    entry: Entry,
-    pack: LoadedPack,
-) -> Refusal | None:
-    """Refuse values no pair of unstated, co-initiated ActionTypes writes."""
-
-    # Nothing can write from a conflict, but that is not why a pair already
-    # contested stays closed: sealing gives that refusal.
-    if is_contested(entry, command.relation):
-        return None
-
-    writers = []
-    for value in (command.a, command.b):
-        writer = _find_writer(entry, command.relation, value, pack)
-        if writer is None:
-            return Refusal(Reason.NO_WRITER)
-        if not _passes(entry, writer.gate):
-            return Refusal(Reason.WRITER_GATE_FAILED)
-        if not pack.passes_owner_rule(writer.name):
-            return Refusal(Reason.NO_CONTESTABLE_FRAMING)
-        writers.append(writer.name)
-
-    # The command names the initiator, since two framings may share several.
-    first, second = writers
-    if command.initiator not in pack.shared_initiators(first, second):
-        return Refusal(Reason.INITIATOR_NOT_SHARED)
-
-    return None
 
 
 def _refuse_contest_sources(
@@ -359,61 +567,105 @@ def _refuse_contest_sources(
     return None
 
 
-def refuse_sealed_write(
-    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
+def _refuse_contest_values(
+    command: ConflictingDoubleDisclosureCommand, entry: Entry
 ) -> Refusal | None:
-    """Refuse a write to a pair holding a contested value."""
+    """Refuse two equal values, or one the pair already holds."""
 
-    return _refuse_sealed(_current(command, writes, registry).values())
+    if command.a == command.b:
+        return Refusal(Reason.CONTESTED_VALUES_EQUAL)
+
+    # Only the current value: the registry keeps no earlier versions, so
+    # whoever draws the two values must avoid those.
+    current = entry.values.get(command.relation)
+    if current is not None and current.value in (command.a, command.b):
+        return Refusal(Reason.CONTESTED_VALUE_IS_CURRENT)
+
+    return None
 
 
-def refuse_sealed_entity(
-    command: EventCommand, registry: Registry, pack: LoadedPack
+def _contest_writers(
+    command: ConflictingDoubleDisclosureCommand,
+    entry: Entry,
+    pack: LoadedPack,
+) -> Refusal | tuple[MutateAction, MutateAction]:
+    """The unstated, co-initiated ActionTypes that write each value, if any."""
+
+    writers = []
+    for value in (command.a, command.b):
+        writer = _find_writer(entry, command.relation, value, pack)
+        if writer is None:
+            return Refusal(Reason.NO_WRITER)
+        if not _passes(entry, writer.gate):
+            return Refusal(Reason.WRITER_GATE_FAILED)
+        if not pack.passes_owner_rule(writer.name):
+            return Refusal(Reason.NO_CONTESTABLE_FRAMING)
+        writers.append(writer)
+
+    # The command names the initiator, since two framings may share several.
+    first, second = writers
+    if command.initiator not in pack.shared_initiators(first.name, second.name):
+        return Refusal(Reason.INITIATOR_NOT_SHARED)
+
+    return first, second
+
+
+def _find_writer(
+    entry: Entry, relation: str, value: ValueClass, pack: LoadedPack
+) -> MutateAction | None:
+    """The ActionType that would write the value over the pair's current."""
+
+    stamped = entry.values.get(relation)
+    if stamped is None or isinstance(stamped.value, Contested):
+        return None
+
+    return pack.action_for(entry.type, relation, (stamped.value, value))
+
+
+def _refuse_sealed(values: Iterable[Stamped]) -> Refusal | None:
+    """Refuse a command touching these values if any is contested."""
+
+    if any(isinstance(current.value, Contested) for current in values):
+        return Refusal(Reason.PAIR_SEALED)
+
+    return None
+
+
+def _refuse_sealed_entity(entry: Entry, pack: LoadedPack) -> Refusal | None:
+    """Refuse a write to an entity with no truth to read in its gates."""
+
+    return (
+        Refusal(Reason.ENTITY_SEALED)
+        if _entity_is_sealed(entry, pack)
+        else None
+    )
+
+
+def _refuse_init_on_conflict(
+    init: _Init, registry: Registry, pack: LoadedPack
 ) -> Refusal | None:
-    """Refuse an event that relies on a value with no truth to read."""
+    """Refuse an INIT whose link's target is sealed, or its filter undecided."""
 
-    if isinstance(command, InitCommand):
-        sealed = _init_relies_on_conflict(command, registry, pack)
-    else:
-        entry = registry.entry(command.referent)
-        # The referent clause runs first and has refused a missing referent.
-        assert entry is not None
-        sealed = _entity_is_sealed(entry, pack)
+    # An undecided filter reads a conflict such as a linking entity's
+    # contested status, which no relation of the endpoint holds, so sealing
+    # it would not catch.
+    sealed = any(
+        _entity_is_sealed(entry, pack) or link in init.undecided
+        for link, entry in init.endpoints.items()
+    ) or any(
+        _entity_is_sealed(_linked_entry(target, registry), pack)
+        for target in init.copied.values()
+    )
 
     return Refusal(Reason.ENTITY_SEALED) if sealed else None
-
-
-def _init_relies_on_conflict(
-    command: InitCommand, registry: Registry, pack: LoadedPack
-) -> bool:
-    """Whether a link's target is sealed, or its filter is undecided on it."""
-
-    for link, endpoint in command.links.items():
-        entry = registry.entry(endpoint)
-        # The endpoint clause runs first and has refused a missing endpoint.
-        assert entry is not None
-
-        if _entity_is_sealed(entry, pack):
-            return True
-
-        # Such as a linking entity's contested status, which no relation of
-        # the endpoint holds, so sealing it would not catch.
-        if _filter_verdict(command, link, entry, registry, pack) is (
-            Verdict.UNDECIDED
-        ):
-            return True
-
-    return any(
-        _entity_is_sealed(_linked_entry(target, registry), pack)
-        for target in _copied_links(command, registry, pack).values()
-    )
 
 
 def _linked_entry(target: NodeId, registry: Registry) -> Entry:
     """The entity a stored link points at."""
 
     entry = registry.entry(target)
-    # A link is stored only once its target has passed the endpoint clause.
+    # A link is stored only to an entity the registry holds, and the registry
+    # drops none.
     assert entry is not None
 
     return entry
@@ -429,41 +681,15 @@ def _entity_is_sealed(entry: Entry, pack: LoadedPack) -> bool:
     return not contested.isdisjoint(pack.relations_legality_reads(entry.type))
 
 
-def refuse_sealed_read(
-    command: ReadCommand, registry: Registry
+def _refuse_anchor(
+    entity_type: EntityType,
+    writes: Mapping[str, ValueClass],
+    registry: Registry,
 ) -> Refusal | None:
-    """Refuse a READ of an entity holding a contested value."""
+    """Refuse values whose anchor is in the same zone as one of the type's."""
 
-    entry = registry.entry(command.entity)
-    # The existence check runs first and has refused a missing entity.
-    assert entry is not None
-
-    # A READ states every value of its entity, so one contested pair is enough.
-    return _refuse_sealed(entry.values.values())
-
-
-def _refuse_sealed(values: Iterable[Stamped]) -> Refusal | None:
-    """Refuse a command touching these values if any is contested."""
-
-    if any(isinstance(current.value, Contested) for current in values):
-        return Refusal(Reason.PAIR_SEALED)
-
-    return None
-
-
-def refuse_anchor_same_zone(
-    command: EventCommand, registry: Registry, pack: LoadedPack
-) -> Refusal | None:
-    """Refuse an INIT whose anchor is in the same zone as one of its type's."""
-
-    if not isinstance(command, InitCommand):
-        return None
-
-    entity_type = pack.entity_types[_init_action(command, pack).referent_type]
     if not entity_type.anchor:
         return None
-
-    writes = _init_writes(command, registry, pack)
 
     # Closed entities count too: a question may name one, so its anchor
     # must still pick it out alone.
@@ -474,36 +700,6 @@ def refuse_anchor_same_zone(
             return Refusal(Reason.ANCHOR_SAME_ZONE)
 
     return None
-
-
-def refuse_unchanged_value(
-    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
-) -> Refusal | None:
-    """Refuse a write of the value its pair already holds."""
-
-    for relation, current in _current(command, writes, registry).items():
-        if writes[relation] == current.value:
-            return Refusal(Reason.UNCHANGED_VALUE)
-
-    return None
-
-
-def refuse_untrue_disclosure(
-    disclosure: Disclosure, registry: Registry
-) -> Refusal | None:
-    """Refuse a disclosure of a value or link the world does not hold."""
-
-    entry = registry.entry(disclosure.entity)
-    if entry is None:
-        return Refusal(Reason.UNTRUE_DISCLOSURE)
-
-    if isinstance(disclosure.value, Link):
-        holds = entry.links.get(disclosure.relation) == disclosure.value.target
-    else:
-        current = entry.values.get(disclosure.relation)
-        holds = current is not None and admits(current.value, disclosure.value)
-
-    return None if holds else Refusal(Reason.UNTRUE_DISCLOSURE)
 
 
 def _same_part(
@@ -526,7 +722,19 @@ def _same_part(
     return new == existing
 
 
-def admits(current: WorldValue, stated: ValueClass) -> bool:
+def _refuse_unchanged_value(
+    writes: Mapping[str, WorldValue], current: Mapping[str, Stamped]
+) -> Refusal | None:
+    """Refuse a write of the value its pair already holds."""
+
+    for relation, stamped in current.items():
+        if writes[relation] == stamped.value:
+            return Refusal(Reason.UNCHANGED_VALUE)
+
+    return None
+
+
+def _admits(current: WorldValue, stated: ValueClass) -> bool:
     """Whether a pair holding the current value may be said to hold another."""
 
     if isinstance(current, Contested):
@@ -536,17 +744,9 @@ def admits(current: WorldValue, stated: ValueClass) -> bool:
 
 
 def _current(
-    command: EventCommand, writes: Mapping[str, WorldValue], registry: Registry
+    entry: Entry, writes: Mapping[str, WorldValue]
 ) -> Mapping[str, Stamped]:
-    """The current stamped value of each pair the command writes, if any."""
-
-    # An INIT writes a new entity, whose pairs hold nothing yet.
-    if isinstance(command, InitCommand):
-        return {}
-
-    entry = registry.entry(command.referent)
-    # The referent clause runs first and has refused a missing referent.
-    assert entry is not None
+    """The current stamped value of each pair the writes touch, if any."""
 
     return {
         relation: entry.values[relation]
@@ -555,64 +755,17 @@ def _current(
     }
 
 
-def _written_type(
-    command: EventCommand, registry: Registry, pack: LoadedPack
-) -> str:
-    """The type of the entity the command writes to."""
-
-    if isinstance(command, ConflictingDoubleDisclosureCommand):
-        entry = registry.entry(command.referent)
-        # The referent clause runs first and has refused a missing referent.
-        assert entry is not None
-        return entry.type
-
-    return pack.action_types[command.action_type].referent_type
-
-
-def _world_writes(
-    command: EventCommand, pack: LoadedPack
-) -> Mapping[str, WorldValue]:
-    """The relation-to-value map the command's event will write."""
-
-    if isinstance(command, ConflictingDoubleDisclosureCommand):
-        return {command.relation: Contested(command.a, command.b)}
-
-    return _plain_writes(command, pack)
-
-
-def _stated_values(
-    command: EventCommand, pack: LoadedPack
-) -> tuple[tuple[str, ValueClass], ...]:
-    """Each relation and plain value the command puts into the world."""
-
-    if isinstance(command, ConflictingDoubleDisclosureCommand):
-        return (
-            (command.relation, command.a),
-            (command.relation, command.b),
-        )
-
-    return tuple(_plain_writes(command, pack).items())
-
-
-def _init_writes(
-    command: InitCommand, registry: Registry, pack: LoadedPack
-) -> dict[str, ValueClass]:
-    """The values an INIT's event will write: its own and its derived ones."""
-
-    return {**command.writes, **_derived_values(command, registry, pack)}
-
-
 def _derived_values(
-    command: InitCommand, registry: Registry, pack: LoadedPack
+    action: InitAction, endpoints: Mapping[str, Entry]
 ) -> dict[str, ValueClass]:
     """The values the INIT's derivations give, skipping any with no answer."""
 
-    # Clauses, and the factory, ask before every endpoint is known good, so
-    # a derivation may have nothing to read yet. `check` holds the final say.
+    # The factory asks before every endpoint is known good, so a derivation
+    # may have nothing to read. `_check_derivations` holds the final say.
     derived = {}
 
-    for relation, derivation in _init_action(command, pack).derives.items():
-        source = _derivation_source(derivation.via, command, registry)
+    for relation, derivation in action.derives.items():
+        source = endpoints.get(derivation.via)
         value = None if source is None else _derive(derivation, source)
         if value is not None and not isinstance(value, Contested):
             derived[relation] = value
@@ -632,155 +785,19 @@ def _derive(derivation: Copy | ByType, source: Entry) -> WorldValue | None:
 
 
 def _copied_links(
-    command: InitCommand, registry: Registry, pack: LoadedPack
+    action: InitAction, endpoints: Mapping[str, Entry]
 ) -> dict[str, NodeId]:
     """The links the INIT copies, skipping any with nothing to copy."""
 
     copied = {}
 
-    for link, derivation in _init_action(command, pack).copied_links.items():
-        source = _derivation_source(derivation.via, command, registry)
+    for link, derivation in action.copied_links.items():
+        source = endpoints.get(derivation.via)
         target = None if source is None else source.links.get(derivation.link)
         if target is not None:
             copied[link] = target
 
     return copied
-
-
-def _derivation_source(
-    via: str, command: InitCommand, registry: Registry
-) -> Entry | None:
-    """The entity the command's link reaches, if it names one that exists."""
-
-    endpoint = command.links.get(via)
-
-    return None if endpoint is None else registry.entry(endpoint)
-
-
-def _plain_writes(
-    command: InitCommand | MutateCommand | AgreeingDoubleDisclosureCommand,
-    pack: LoadedPack,
-) -> Mapping[str, ValueClass]:
-    """The plain relation-to-value map a non-conflict's event will write."""
-
-    action = pack.action_types[command.action_type]
-    if isinstance(command, InitCommand) and isinstance(action, InitAction):
-        return command.writes
-    if not isinstance(command, InitCommand) and isinstance(
-        action, MutateAction
-    ):
-        return {action.relation: _written_value(command, action)}
-
-    # A command naming an ActionType of the other shape is a caller's bug,
-    # raised like an unknown name, not a refusal a clause would count.
-    raise TypeError(f"{type(command).__name__} cannot take {action.name}")
-
-
-def _check_links(command: EventCommand, pack: LoadedPack) -> None:
-    """Raise unless an INIT fills its links and names filters it can use."""
-
-    if not isinstance(command, InitCommand):
-        return
-
-    action = _init_action(command, pack)
-
-    # Like a command of the wrong shape: the caller fills every link the
-    # INIT does not copy, and a link it lacks or may not name is its bug.
-    if command.links.keys() != action.links.keys():
-        raise ValueError(
-            f"{action.name} takes links {sorted(action.links)},"
-            f" not {sorted(command.links)}"
-        )
-    if not command.filters.keys() <= action.links.keys():
-        raise ValueError(
-            f"{action.name} writes no link to filter among"
-            f" {sorted(command.filters.keys() - action.links.keys())}"
-        )
-
-    unknown = set(command.filters.values()) - pack.role_filters.keys()
-    if unknown:
-        raise ValueError(
-            f"{action.name} names role filters the pack lacks:"
-            f" {sorted(unknown)}"
-        )
-
-    # A command stores no bindings, so replay could not judge one of these.
-    relating = sorted(
-        name
-        for name in set(command.filters.values())
-        if pack.role_filters[name].of is not None
-    )
-    if relating:
-        raise ValueError(
-            f"{action.name} names role filters relating two roles: {relating}"
-        )
-
-
-def _check_fixed_values(command: EventCommand, pack: LoadedPack) -> None:
-    """Raise unless an INIT writes exactly the values its ActionType fixes."""
-
-    if not isinstance(command, InitCommand):
-        return
-
-    action = _init_action(command, pack)
-
-    # The pack fixes these, so a command that gets one wrong is its caller's
-    # bug. Left unwritten, a status would break every later read of it.
-    wrong = [
-        relation
-        for relation, value in action.fixes.items()
-        if command.writes.get(relation) != value
-    ]
-    if wrong:
-        raise ValueError(
-            f"{action.name} fixes {sorted(wrong)}, the command differs"
-        )
-
-
-def _check_no_derived_writes(command: EventCommand, pack: LoadedPack) -> None:
-    """Raise if an INIT names a value its ActionType derives."""
-
-    if not isinstance(command, InitCommand):
-        return
-
-    action = _init_action(command, pack)
-
-    named = command.writes.keys() & action.derives.keys()
-    if named:
-        raise ValueError(
-            f"{action.name} derives {sorted(named)}, not the command"
-        )
-
-
-def _check_derivations(
-    command: EventCommand, registry: Registry, pack: LoadedPack
-) -> None:
-    """Raise if a legal INIT has a derivation with no fitting answer."""
-
-    if not isinstance(command, InitCommand):
-        return
-
-    action = _init_action(command, pack)
-    derived = _derived_values(command, registry, pack)
-
-    # The clauses have passed, so the sources exist and none is sealed. What
-    # is left is a recipe that cannot work, or a read `derivation_reads` omits:
-    # the pack's bug, and an entity missing the value would break later reads.
-    unanswered = (action.derives.keys() | action.copied_links.keys()) - (
-        derived.keys() | _copied_links(command, registry, pack).keys()
-    )
-    if unanswered:
-        raise LookupError(f"{action.name} cannot derive {sorted(unanswered)}")
-
-    # The pack chose these values, so no command is to blame for a bad one.
-    relations = pack.entity_types[action.referent_type].relations
-    unfit = [
-        relation
-        for relation, value in derived.items()
-        if not _fits(relations, relation, value)
-    ]
-    if unfit:
-        raise ValueError(f"{action.name} derives unfit {sorted(unfit)}")
 
 
 def _check_names(command: Command, pack: LoadedPack) -> None:
@@ -818,14 +835,131 @@ def _named_sources(command: Command) -> tuple[str, ...]:
     return () if command.source is None else (command.source,)
 
 
+def _default_source(initiator: str, named: str | None, pack: LoadedPack) -> str:
+    """The source of an event's disclosures, the named one if any."""
+
+    return default_source(
+        initiator, named, pack.speakers.values(), pack.sources.values()
+    )
+
+
 def _init_action(command: InitCommand, pack: LoadedPack) -> InitAction:
-    """The INIT ActionType the command names, its shape already checked."""
+    """The INIT ActionType the command names."""
 
     action = pack.action_types[command.action_type]
-    # `_writes` has raised for an INIT command naming a MUTATE ActionType.
-    assert isinstance(action, InitAction)
+    if not isinstance(action, InitAction):
+        raise _wrong_shape(command, action.name)
 
     return action
+
+
+def _mutate_action(
+    command: MutateCommand | AgreeingDoubleDisclosureCommand, pack: LoadedPack
+) -> MutateAction:
+    """The MUTATE ActionType the command names."""
+
+    action = pack.action_types[command.action_type]
+    if not isinstance(action, MutateAction):
+        raise _wrong_shape(command, action.name)
+
+    return action
+
+
+def _wrong_shape(command: EventCommand, action: str) -> TypeError:
+    """The error for a command naming an ActionType of the other shape."""
+
+    # A caller's bug, raised like an unknown name, not a refusal a clause
+    # would count.
+    return TypeError(f"{type(command).__name__} cannot take {action}")
+
+
+def _check_links(
+    command: InitCommand, action: InitAction, pack: LoadedPack
+) -> None:
+    """Raise unless an INIT fills its links and names filters it can use."""
+
+    # Like a command of the wrong shape: the caller fills every link the
+    # INIT does not copy, and a link it lacks or may not name is its bug.
+    if command.links.keys() != action.links.keys():
+        raise ValueError(
+            f"{action.name} takes links {sorted(action.links)},"
+            f" not {sorted(command.links)}"
+        )
+    if not command.filters.keys() <= action.links.keys():
+        raise ValueError(
+            f"{action.name} writes no link to filter among"
+            f" {sorted(command.filters.keys() - action.links.keys())}"
+        )
+
+    unknown = set(command.filters.values()) - pack.role_filters.keys()
+    if unknown:
+        raise ValueError(
+            f"{action.name} names role filters the pack lacks:"
+            f" {sorted(unknown)}"
+        )
+
+    # A command stores no bindings, so replay could not judge one of these.
+    relating = sorted(
+        name
+        for name in set(command.filters.values())
+        if pack.role_filters[name].of is not None
+    )
+    if relating:
+        raise ValueError(
+            f"{action.name} names role filters relating two roles: {relating}"
+        )
+
+
+def _check_fixed_values(command: InitCommand, action: InitAction) -> None:
+    """Raise unless an INIT writes exactly the values its ActionType fixes."""
+
+    # The pack fixes these, so a command that gets one wrong is its caller's
+    # bug. Left unwritten, a status would break every later read of it.
+    wrong = [
+        relation
+        for relation, value in action.fixes.items()
+        if command.writes.get(relation) != value
+    ]
+    if wrong:
+        raise ValueError(
+            f"{action.name} fixes {sorted(wrong)}, the command differs"
+        )
+
+
+def _check_no_derived_writes(command: InitCommand, action: InitAction) -> None:
+    """Raise if an INIT names a value its ActionType derives."""
+
+    named = command.writes.keys() & action.derives.keys()
+    if named:
+        raise ValueError(
+            f"{action.name} derives {sorted(named)}, not the command"
+        )
+
+
+def _check_derivations(init: _Init, pack: LoadedPack) -> None:
+    """Raise if a legal INIT has a derivation with no fitting answer."""
+
+    action = init.action
+
+    # The clauses have passed, so every endpoint exists and none is sealed. A
+    # derivation still unanswered has a `via` naming no link, a recipe that
+    # cannot work, or a read `derivation_reads` omits: the pack's bug, and an
+    # entity missing the value would break later reads.
+    unanswered = (action.derives.keys() | action.copied_links.keys()) - (
+        init.derived.keys() | init.copied.keys()
+    )
+    if unanswered:
+        raise LookupError(f"{action.name} cannot derive {sorted(unanswered)}")
+
+    # The pack chose these values, so no command is to blame for a bad one.
+    relations = pack.entity_types[action.referent_type].relations
+    unfit = [
+        relation
+        for relation, value in init.derived.items()
+        if not _fits(relations, relation, value)
+    ]
+    if unfit:
+        raise ValueError(f"{action.name} derives unfit {sorted(unfit)}")
 
 
 def _written_value(
@@ -877,126 +1011,6 @@ def _filter_verdict(
     return judge(pack.role_filters[name], entry, registry, pack)
 
 
-def _init_records(
-    command: InitCommand,
-    source: str,
-    registry: Registry,
-    pack: LoadedPack,
-    allocator: IdAllocator,
-) -> tuple[Record, ...]:
-    """The INIT event, then a default disclosure per value and link."""
-
-    event = InitEvent(
-        session=command.session,
-        initiator=command.initiator,
-        action_type=command.action_type,
-        new_id=allocator.allocate(),
-        writes=_init_writes(command, registry, pack),
-        links={**command.links, **_copied_links(command, registry, pack)},
-    )
-
-    links = {link: Link(target) for link, target in event.links.items()}
-
-    return (
-        event,
-        *_disclosures(
-            event, event.new_id, {**event.writes, **links}, source, allocator
-        ),
-    )
-
-
-def _mutate_records(
-    command: MutateCommand | AgreeingDoubleDisclosureCommand,
-    writes: Mapping[str, ValueClass],
-    sources: tuple[str, ...],
-    allocator: IdAllocator,
-) -> tuple[Record, ...]:
-    """The MUTATE event, then one disclosure of its value per source."""
-
-    event = MutateEvent(
-        session=command.session,
-        initiator=command.initiator,
-        action_type=command.action_type,
-        referent=command.referent,
-        writes=writes,
-    )
-
-    return (
-        event,
-        *(
-            disclosure
-            for source in sources
-            for disclosure in _disclosures(
-                event, event.referent, writes, source, allocator
-            )
-        ),
-    )
-
-
-def _contest_records(
-    command: ConflictingDoubleDisclosureCommand,
-    registry: Registry,
-    pack: LoadedPack,
-    allocator: IdAllocator,
-) -> tuple[Record, ...]:
-    """The CONTEST event, then each source's disclosure of its own value."""
-
-    entry = registry.entry(command.referent)
-    # The check has refused a contested write on a missing referent.
-    assert entry is not None
-
-    event = MutateEvent(
-        session=command.session,
-        initiator=command.initiator,
-        action_type=CONTEST,
-        referent=command.referent,
-        writes=_world_writes(command, pack),
-    )
-
-    return (
-        event,
-        *(
-            Disclosure(
-                session=event.session,
-                source=source,
-                action_type=_writer(entry, command.relation, value, pack).name,
-                initiator=event.initiator,
-                entity=event.referent,
-                relation=command.relation,
-                value=value,
-                node_id=allocator.allocate(),
-            )
-            for source, value in zip(
-                command.sources, (command.a, command.b), strict=True
-            )
-        ),
-    )
-
-
-def _writer(
-    entry: Entry, relation: str, value: ValueClass, pack: LoadedPack
-) -> MutateAction:
-    """The ActionType that writes the value, which the check has ensured."""
-
-    action = _find_writer(entry, relation, value, pack)
-    # The check has refused a value with no writer, and a sealed pair.
-    assert action is not None
-
-    return action
-
-
-def _find_writer(
-    entry: Entry, relation: str, value: ValueClass, pack: LoadedPack
-) -> MutateAction | None:
-    """The ActionType that would write the value over the pair's current."""
-
-    stamped = entry.values.get(relation)
-    if stamped is None or isinstance(stamped.value, Contested):
-        return None
-
-    return pack.action_for(entry.type, relation, (stamped.value, value))
-
-
 def _disclosures(
     event: Event,
     entity: NodeId,
@@ -1021,37 +1035,11 @@ def _disclosures(
     )
 
 
-def _read_records(
-    command: ReadCommand, registry: Registry, allocator: IdAllocator
-) -> tuple[Record, ...]:
-    """The READ's disclosures of the entity's current values."""
-
-    # Each value is copied from the registry, so these disclosures always
-    # pass `refuse_untrue_disclosure`, only a disclosure written by other
-    # means, as in a stored log, can fail it.
-    entry = registry.entry(command.entity)
-    # The check has refused a READ of an entity the registry lacks.
-    assert entry is not None
-
-    return tuple(
-        Disclosure(
-            session=command.session,
-            source=command.source,
-            action_type=READ,
-            initiator=command.initiator,
-            entity=command.entity,
-            relation=relation,
-            value=_readable(current.value),
-            node_id=allocator.allocate(),
-        )
-        for relation, current in entry.values.items()
-    )
-
-
 def _readable(current: WorldValue) -> ValueClass:
     """The value a READ states, which a conflict, having no truth, is not."""
 
-    # The check has refused a READ of an entity holding a conflict.
+    # A READ of an entity holding a conflict is refused as sealed, so the
+    # values it states are never contested.
     assert not isinstance(current, Contested)
 
     return current
