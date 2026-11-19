@@ -15,8 +15,12 @@ from mbench.core.records.commands import (
     ReadCommand,
 )
 from mbench.core.records.log import AcceptedCommand, Log
-from mbench.core.values.factory import Factory, FillRefusal
-from mbench.core.values.protocol import ValueClass
+from mbench.core.values.factory import (
+    AgreeingDraft,
+    ConflictDraft,
+    Factory,
+    FillRefusal,
+)
 from mbench.packs.spec import Framing, InitAction, LoadedPack, MutateAction
 from tests.testpack.pack import LOADED_PACK
 
@@ -144,15 +148,15 @@ def draw_and_decide(
             read = _draw_read(session, stream, registry, pack)
             return None if read is None else run.decide(read)
         case Shape.AGREEING:
-            agreeing = _draw_agreeing(session, stream, registry, factory, pack)
-            if agreeing is None or isinstance(agreeing, FillRefusal):
-                return agreeing
-            return run.decide(agreeing)
+            agreeing = _draw_agreeing(session, stream, registry, pack)
+            if agreeing is None:
+                return None
+            return run.fill_and_decide(agreeing, factory)
         case Shape.CONFLICTING:
-            contest = _draw_contest(session, stream, registry, factory, pack)
-            if contest is None or isinstance(contest, FillRefusal):
-                return contest
-            return run.decide(contest)
+            contest = _draw_contest(session, stream, registry, pack)
+            if contest is None:
+                return None
+            return run.fill_and_decide(contest, factory)
 
 
 def _draw_init(
@@ -255,42 +259,29 @@ def _draw_read(
 
 
 def _draw_agreeing(
-    session: int,
-    stream: random.Random,
-    registry: Registry,
-    factory: Factory,
-    pack: LoadedPack,
-) -> AgreeingDoubleDisclosureCommand | FillRefusal | None:
-    """A value the factory steps to, stated by two different sources."""
+    session: int, stream: random.Random, registry: Registry, pack: LoadedPack
+) -> AgreeingDraft | None:
+    """A draft of a value step, stated by two different sources."""
 
     mutate = _draw_mutate(session, stream, registry, pack, status=False)
     if mutate is None:
         return None
 
-    value = _fill_step(mutate, registry, factory)
-    if isinstance(value, FillRefusal):
-        return value
-
     first, second = stream.sample(sorted(pack.sources), 2)
 
-    return AgreeingDoubleDisclosureCommand(
+    return AgreeingDraft(
         session=session,
         initiator=mutate.initiator,
         action_type=mutate.action_type,
         referent=mutate.referent,
-        value=value,
         sources=(first, second),
     )
 
 
 def _draw_contest(
-    session: int,
-    stream: random.Random,
-    registry: Registry,
-    factory: Factory,
-    pack: LoadedPack,
-) -> ConflictingDoubleDisclosureCommand | FillRefusal | None:
-    """Two values for one pair, by two sources of equal authority."""
+    session: int, stream: random.Random, registry: Registry, pack: LoadedPack
+) -> ConflictDraft | None:
+    """A draft of two values for one pair, by sources of equal authority."""
 
     mutates = _actions(pack, MutateAction)
     entity = _pick(
@@ -308,11 +299,6 @@ def _draw_contest(
             }
         )
     )
-    values = _contest_values(
-        session, stream, entity, relation, registry, factory, pack
-    )
-    if values is None or isinstance(values, FillRefusal):
-        return values
 
     # Two different sources of one authority: a source alone in its tier
     # could only be named twice, which a speaker may not be.
@@ -322,76 +308,13 @@ def _draw_contest(
     shared = [tier for _, tier in sorted(tiers.items()) if len(tier) > 1]
     first, second = stream.sample(stream.choice(shared), 2)
 
-    return ConflictingDoubleDisclosureCommand(
+    return ConflictDraft(
         session=session,
         initiator=stream.choice(sorted(pack.actors)),
         referent=entity.id,
         relation=relation,
-        a=values[0],
-        b=values[1],
         sources=(first, second),
     )
-
-
-def _contest_values(
-    session: int,
-    stream: random.Random,
-    entity: Entry,
-    relation: str,
-    registry: Registry,
-    factory: Factory,
-    pack: LoadedPack,
-) -> tuple[ValueClass, ValueClass] | FillRefusal | None:
-    """Two values the relation could step to: two statuses, or two fills."""
-
-    writers = [
-        action
-        for action in _actions(pack, MutateAction)
-        if action.referent_type == entity.type and action.relation == relation
-    ]
-
-    # Sorted, so the same seed samples the same two.
-    statuses = sorted(
-        {action.fixes for action in writers if action.fixes is not None},
-        key=str,
-    )
-    if statuses:
-        if len(statuses) < 2:
-            return None
-        a, b = stream.sample(statuses, 2)
-        return a, b
-
-    # A value relation has one writer, whose step the factory fills twice.
-    (writer,) = writers
-    framing = _framing(stream, writer.name, pack)
-    unfilled = MutateCommand(
-        session=session,
-        initiator=framing.initiator,
-        action_type=writer.name,
-        referent=entity.id,
-    )
-
-    first = _fill_step(unfilled, registry, factory)
-    if isinstance(first, FillRefusal):
-        return first
-    second = _fill_step(unfilled, registry, factory)
-    if isinstance(second, FillRefusal):
-        return second
-
-    return first, second
-
-
-def _fill_step(
-    command: MutateCommand, registry: Registry, factory: Factory
-) -> ValueClass | FillRefusal:
-    """The value the factory steps the command's pair to, or its refusal."""
-
-    filled = factory.fill(command, registry)
-    if isinstance(filled, FillRefusal):
-        return filled
-    assert isinstance(filled, MutateCommand) and filled.value is not None
-
-    return filled.value
 
 
 def _actions[A: (InitAction, MutateAction)](

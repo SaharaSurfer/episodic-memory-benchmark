@@ -1,13 +1,13 @@
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import combinations
+from typing import ClassVar
 
 import pytest
 
 from mbench.core.legality.predicate import Reason, Refusal
-from mbench.core.values.protocol import Zone
+from mbench.core.values.protocol import UniquenessScope, Zone
 from mbench.packs.spec import EntityType, LoadedPack
 from tests.core.world import (
-    CARD_WRITES,
     LAST_FOURS,
     REPORTED_IN,
     World,
@@ -27,6 +27,30 @@ from tests.testpack.values import (
 )
 
 SAME_ZONE = Refusal(Reason.ANCHOR_SAME_ZONE)
+
+
+@dataclass(frozen=True)
+class _UnscopedFour(LastFour):
+    """A last four two entities may share, so only an anchor can clash."""
+
+    scope: ClassVar[UniquenessScope] = UniquenessScope.NONE
+
+
+@dataclass(frozen=True)
+class _UnscopedNumber(ReferenceNumber):
+    """A case number two cases may share, so only an anchor can clash."""
+
+    scope: ClassVar[UniquenessScope] = UniquenessScope.NONE
+
+
+# Unscoped stand-ins for the anchor parts the uniqueness rule would otherwise
+# refuse to share, so a test can see the anchor rule alone.
+SHARED_FOUR = _UnscopedFour(LAST_FOURS[0])
+SHARED_NUMBER = _UnscopedNumber("60214")
+
+
+# The world's second last four, free after `World.open` once.
+FREE_FOUR = LastFour(LAST_FOURS[1])
 
 # Every zoned class in the test pack is in the same zone only when equal, so
 # these tests cannot tell a zone comparison from an equality one. Telling them
@@ -82,11 +106,31 @@ def test_an_init_anchored_in_an_existing_ones_near_zone_is_accepted() -> None:
     assert not isinstance(outcome, Refusal)
 
 
+def test_an_unscoped_last_four_still_clashes_on_its_anchor() -> None:
+    world = World()
+    world.open(lastFour=SHARED_FOUR)
+
+    outcome = world.decide(open_account(2, lastFour=SHARED_FOUR))
+
+    assert outcome == SAME_ZONE
+
+
+def test_an_unscoped_case_number_still_clashes_on_its_anchor() -> None:
+    world = World()
+    card = world.issue_card(world.open())
+    world.accept(report_fraud(card, REPORTED_IN, caseNumber=SHARED_NUMBER))
+    command = report_fraud(card, REPORTED_IN + 1, caseNumber=SHARED_NUMBER)
+
+    assert world.decide(command) == SAME_ZONE
+
+
 def test_two_part_anchors_differing_in_one_part_are_accepted() -> None:
     world = World()
-    world.open()
+    world.open(lastFour=SHARED_FOUR)
 
-    outcome = world.decide(open_account(2, kind=DepositKind("checking")))
+    outcome = world.decide(
+        open_account(2, kind=DepositKind("checking"), lastFour=SHARED_FOUR)
+    )
 
     assert not isinstance(outcome, Refusal)
 
@@ -133,7 +177,9 @@ def test_an_unequal_anchor_without_zones_is_accepted() -> None:
     world = _anchored_on_product_name()
     product = ProductName("Goal Saver")
 
-    outcome = world.decide(open_account(2, productName=product))
+    outcome = world.decide(
+        open_account(2, productName=product, lastFour=FREE_FOUR)
+    )
 
     assert not isinstance(outcome, Refusal)
 
@@ -143,7 +189,7 @@ def test_a_type_with_no_anchor_never_clashes() -> None:
     world = World(_with_types(unanchored))
     world.open()
 
-    outcome = world.decide(open_account(2))
+    outcome = world.decide(open_account(2, lastFour=FREE_FOUR))
 
     assert not isinstance(outcome, Refusal)
 
@@ -155,9 +201,12 @@ def test_entities_of_two_types_never_clash() -> None:
             replace(PAYMENT_CARD, anchor=("lastFour",)),
         )
     )
-    account = world.open(lastFour=CARD_WRITES["lastFour"])
+    account = world.open(lastFour=SHARED_FOUR)
+    card = issue(account, 2)
 
-    outcome = world.decide(issue(account, 2))
+    outcome = world.decide(
+        replace(card, writes={**card.writes, "lastFour": SHARED_FOUR})
+    )
 
     assert not isinstance(outcome, Refusal)
 
@@ -202,8 +251,8 @@ def test_a_case_with_another_number_is_accepted() -> None:
 def test_a_case_of_another_kind_with_the_same_number_is_accepted() -> None:
     world = World()
     card = world.issue_card(world.open())
-    world.open_case(card)
-    command = request_card(card, REPORTED_IN + 1)
+    world.accept(report_fraud(card, REPORTED_IN, caseNumber=SHARED_NUMBER))
+    command = request_card(card, REPORTED_IN + 1, caseNumber=SHARED_NUMBER)
 
     assert not isinstance(world.decide(command), Refusal)
 

@@ -1,8 +1,8 @@
 import random
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import replace
 from decimal import Decimal
-from typing import Any, ClassVar, Self
+from typing import Any
 
 import pytest
 
@@ -15,8 +15,13 @@ from mbench.core.records.commands import (
 )
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import Record
-from mbench.core.values.factory import Factory, FillReason, FillRefusal
-from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
+from mbench.core.values.factory import (
+    ConflictDraft,
+    Factory,
+    FillReason,
+    FillRefusal,
+)
+from mbench.core.values.protocol import ValueClass
 from mbench.core.values.samplers import (
     ByValue,
     Choice,
@@ -24,31 +29,32 @@ from mbench.core.values.samplers import (
     Sampler,
 )
 from mbench.packs.spec import (
-    EntityType,
-    Framing,
-    InitAction,
     LoadedPack,
     MutateAction,
 )
 from tests.core.records.handmade import OPEN_ACCOUNT
 from tests.core.world import (
+    BRANCH_PACK,
     FEE,
-    ISSUED_IN,
     LAST_FOURS,
     MISSING,
+    OPEN_BRANCH,
     OPENED_IN,
     OPENING_RATE,
+    RECODE_BRANCH,
     REPORTED_IN,
     WRITES,
+    BranchName,
     World,
     contest,
     created_id,
     fee_contest,
-    issue,
     move,
+    open_branch,
     report_fraud,
     reprice,
     request_card,
+    unfilled_card,
     unfilled_fee_change,
     unfilled_opening,
     with_action,
@@ -74,12 +80,6 @@ SEEDS = range(40)
 
 # Enough for a first draw that clashes, which is all a redraw test needs.
 REDRAW_SEEDS = range(5)
-
-
-def _unfilled_card(account: NodeId) -> InitCommand:
-    """A command issuing a card on the account, no value chosen yet."""
-
-    return replace(issue(account, ISSUED_IN), writes={})
 
 
 def _filled_init(
@@ -284,7 +284,7 @@ def test_an_init_command_naming_a_mutate_raises() -> None:
 def test_a_card_issue_keeps_its_links_and_fills_its_values() -> None:
     world = World()
     account = world.open()
-    unfilled = _unfilled_card(account)
+    unfilled = unfilled_card(account)
 
     filled = _filled_init(Factory(0, LOADED_PACK), unfilled, world.registry)
 
@@ -522,36 +522,6 @@ def test_a_mutate_command_naming_an_init_raises() -> None:
         Factory(0, LOADED_PACK).fill(command, world.registry)
 
 
-@dataclass(frozen=True)
-class BranchName(ZonedValueClass):
-    """A name without a uniqueness scope, the same zone ignoring case."""
-
-    tag: ClassVar[str] = "branch_name"
-    payload: str
-
-    def is_valid(self) -> bool:
-        """Any name."""
-
-        return True
-
-    def render(self) -> str:
-        """The name as spelled."""
-
-        return self.payload
-
-    def zone(self, other: Self) -> Zone:
-        """Same if the names differ at most in case, far otherwise."""
-
-        same = other.payload.casefold() == self.payload.casefold()
-
-        return Zone.SAME if same else Zone.FAR
-
-    def near(self) -> Iterator[Self]:
-        """Nothing: the near zone is empty."""
-
-        yield from ()
-
-
 class Scripted:
     """A sampler giving the listed values in turn, then the last for good."""
 
@@ -572,8 +542,6 @@ class Scripted:
         return value
 
 
-OPEN_BRANCH = "OPEN_BRANCH"
-RECODE = MutateAction("RECODE_BRANCH", referent_type="BRANCH", relation="code")
 MAIN = BranchName("Main")
 HARBOR = BranchName("Harbor")
 TAKEN_CASE = ReferenceNumber("48213")
@@ -583,34 +551,6 @@ OTHER_FREE_CASE = ReferenceNumber("48216")
 OWN_CASE = ReferenceNumber("48217")
 TAKEN_FOUR = LastFour(LAST_FOURS[0])
 FREE_FOUR = LastFour(LAST_FOURS[1])
-
-# Anchored on a class with no scope, so only the anchor rule can redraw it.
-# Its codes are identifiers outside the anchor, so a MUTATE may write them.
-BRANCH_PACK = replace(
-    with_action(
-        with_action(
-            with_entity_type(
-                LOADED_PACK,
-                EntityType(
-                    "BRANCH",
-                    relations={
-                        "name": BranchName,
-                        "code": ReferenceNumber,
-                        "spareCode": ReferenceNumber,
-                    },
-                    anchor=("name",),
-                    nameable=True,
-                ),
-            ),
-            InitAction(OPEN_BRANCH, referent_type="BRANCH"),
-        ),
-        RECODE,
-    ),
-    framings={
-        **LOADED_PACK.framings,
-        RECODE.name: (Framing("BANK", "letter"),),
-    },
-)
 
 
 def _with_sampler(
@@ -642,19 +582,7 @@ def _branch_pack(**samplers: Sampler[Any]) -> LoadedPack:
 def _unfilled_branch() -> InitCommand:
     """A command opening a branch, no value of it chosen yet."""
 
-    return _branch_opening()
-
-
-def _branch_opening(**writes: ValueClass) -> InitCommand:
-    """A command opening a branch with these values."""
-
-    return InitCommand(
-        session=OPENED_IN,
-        initiator="BANK",
-        action_type=OPEN_BRANCH,
-        source="operator",
-        writes=writes,
-    )
+    return open_branch()
 
 
 def _recoding(branch: NodeId) -> MutateCommand:
@@ -663,7 +591,7 @@ def _recoding(branch: NodeId) -> MutateCommand:
     return MutateCommand(
         session=2,
         initiator="BANK",
-        action_type=RECODE.name,
+        action_type=RECODE_BRANCH.name,
         source="letter",
         referent=branch,
     )
@@ -678,9 +606,9 @@ def _recode_pack(sampler: Sampler[Any]) -> LoadedPack:
 def _second_branch(world: World) -> NodeId:
     """Open a branch holding the taken code, then one to recode, its id."""
 
-    world.accept(_branch_opening(name=MAIN, code=TAKEN_CASE))
+    world.accept(open_branch(name=MAIN, code=TAKEN_CASE))
 
-    return created_id(world.accept(_branch_opening(name=HARBOR, code=OWN_CASE)))
+    return created_id(world.accept(open_branch(name=HARBOR, code=OWN_CASE)))
 
 
 @pytest.mark.parametrize("seed", REDRAW_SEEDS)
@@ -693,7 +621,7 @@ def test_a_scenario_identifier_is_redrawn_off_another_types_value(
     account = world.open(lastFour=TAKEN_FOUR)
 
     filled = _filled_init(
-        Factory(seed, pack), _unfilled_card(account), world.registry
+        Factory(seed, pack), unfilled_card(account), world.registry
     )
 
     assert filled.writes["lastFour"] == FREE_FOUR
@@ -709,7 +637,7 @@ def test_a_closed_entity_keeps_its_identifier_taken(seed: int) -> None:
     world.accept(move(account, 2, "CLOSE_DEPOSIT_ACCOUNT"))
 
     filled = _filled_init(
-        Factory(seed, pack), _unfilled_card(account), world.registry
+        Factory(seed, pack), unfilled_card(account), world.registry
     )
 
     assert filled.writes["lastFour"] == FREE_FOUR
@@ -720,7 +648,7 @@ def test_both_values_of_a_contested_identifier_stay_taken(seed: int) -> None:
     pool = Choice((TAKEN_CASE, ALSO_TAKEN_CASE, FREE_CASE))
     pack = _branch_pack(name=Choice((HARBOR,)), code=pool)
     world = World(pack)
-    branch = created_id(world.accept(_branch_opening(name=MAIN, code=OWN_CASE)))
+    branch = created_id(world.accept(open_branch(name=MAIN, code=OWN_CASE)))
     world.accept(
         ConflictingDoubleDisclosureCommand(
             session=2,
@@ -768,7 +696,7 @@ def test_a_type_identifier_may_equal_another_types_value() -> None:
     )
     world = World(pack)
     account = world.open()
-    world.accept(_branch_opening(name=MAIN, code=TAKEN_CASE))
+    world.accept(open_branch(name=MAIN, code=TAKEN_CASE))
     unfilled = replace(report_fraud(account, REPORTED_IN), writes={})
 
     filled = _filled_init(Factory(0, pack), unfilled, world.registry)
@@ -803,7 +731,7 @@ def test_an_anchor_in_an_existing_same_zone_is_redrawn(seed: int) -> None:
     pool = Choice((BranchName("MAIN"), HARBOR))
     pack = _branch_pack(name=pool)
     world = World(pack)
-    world.accept(_branch_opening(name=MAIN))
+    world.accept(open_branch(name=MAIN))
 
     filled = _filled_init(
         Factory(seed, pack), _unfilled_branch(), world.registry
@@ -824,7 +752,7 @@ def test_a_value_read_from_a_redrawn_anchor_follows_it(seed: int) -> None:
     )
     pack = _branch_pack(name=Choice((MAIN, HARBOR)), code=code_by_name)
     world = World(pack)
-    world.accept(_branch_opening(name=MAIN))
+    world.accept(open_branch(name=MAIN))
 
     filled = _filled_init(
         Factory(seed, pack), _unfilled_branch(), world.registry
@@ -848,12 +776,34 @@ def test_a_mutate_identifier_is_redrawn_off_other_entities(seed: int) -> None:
     assert not isinstance(world.decide(filled), Refusal)
 
 
+@pytest.mark.parametrize("seed", REDRAW_SEEDS)
+def test_a_conflict_identifier_is_redrawn_off_other_entities(seed: int) -> None:
+    pack = _recode_pack(Choice((TAKEN_CASE, FREE_CASE, OTHER_FREE_CASE)))
+    world = World(pack)
+    branch = _second_branch(world)
+    draft = ConflictDraft(
+        session=2,
+        initiator="BANK",
+        referent=branch,
+        relation="code",
+        sources=("letter", "email"),
+    )
+
+    # Two pairs in three hold the taken code, so the default limit could run
+    # out.
+    filled = Factory(seed, pack, redraw_limit=100).fill(draft, world.registry)
+
+    assert isinstance(filled, ConflictingDoubleDisclosureCommand)
+    assert {filled.a, filled.b} == {FREE_CASE, OTHER_FREE_CASE}
+    assert not isinstance(world.decide(filled), Refusal)
+
+
 @pytest.mark.parametrize("limit", [0, 2])
 def test_an_init_succeeds_on_its_last_allowed_redraw(limit: int) -> None:
     sampler = Scripted(*[MAIN] * limit, HARBOR)
     pack = _branch_pack(name=sampler)
     world = World(pack)
-    world.accept(_branch_opening(name=MAIN))
+    world.accept(open_branch(name=MAIN))
 
     filled = _filled_init(
         Factory(0, pack, redraw_limit=limit),
@@ -869,7 +819,7 @@ def test_an_init_is_refused_past_the_redraw_limit(limit: int) -> None:
     sampler = Scripted(*[MAIN] * (limit + 1), HARBOR)
     pack = _branch_pack(name=sampler)
     world = World(pack)
-    world.accept(_branch_opening(name=MAIN))
+    world.accept(open_branch(name=MAIN))
 
     outcome = Factory(0, pack, redraw_limit=limit).fill(
         _unfilled_branch(), world.registry
@@ -884,7 +834,7 @@ def test_a_refusal_names_the_clash_of_the_last_draw() -> None:
         name=Scripted(MAIN, HARBOR), code=Scripted(FREE_CASE, TAKEN_CASE)
     )
     world = World(pack)
-    world.accept(_branch_opening(name=MAIN, code=TAKEN_CASE))
+    world.accept(open_branch(name=MAIN, code=TAKEN_CASE))
 
     outcome = Factory(0, pack, redraw_limit=1).fill(
         _unfilled_branch(), world.registry
@@ -928,7 +878,7 @@ def test_a_pool_of_taken_identifiers_ends_in_a_refusal() -> None:
     world = World(pack)
     account = world.open(lastFour=TAKEN_FOUR)
 
-    outcome = Factory(0, pack).fill(_unfilled_card(account), world.registry)
+    outcome = Factory(0, pack).fill(unfilled_card(account), world.registry)
 
     assert outcome == FillRefusal(FillReason.IDENTIFIER_TAKEN)
 
@@ -936,7 +886,7 @@ def test_a_pool_of_taken_identifiers_ends_in_a_refusal() -> None:
 def test_an_init_whose_links_do_not_match_its_action_raises() -> None:
     world = World()
     account = world.open()
-    unlinked = replace(_unfilled_card(account), links={})
+    unlinked = replace(unfilled_card(account), links={})
 
     with pytest.raises(ValueError, match="ISSUE_CARD takes links"):
         Factory(0, LOADED_PACK).fill(unlinked, world.registry)
@@ -951,9 +901,9 @@ def test_an_init_with_a_missing_endpoint_is_left_to_decide() -> None:
     world = World(pack)
     account = world.open()
     world.issue_card(account)
-    clashing = Factory(0, pack).fill(_unfilled_card(account), world.registry)
+    clashing = Factory(0, pack).fill(unfilled_card(account), world.registry)
 
-    filled = Factory(0, pack).fill(_unfilled_card(MISSING), world.registry)
+    filled = Factory(0, pack).fill(unfilled_card(MISSING), world.registry)
 
     assert clashing == FillRefusal(FillReason.ANCHOR_SAME_ZONE)
 

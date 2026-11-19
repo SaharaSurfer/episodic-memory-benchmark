@@ -1,10 +1,16 @@
 from collections.abc import Iterable, Mapping
 
-from mbench.core.folds.registry import Entry, Stamped, contested_relations
+from mbench.core.folds.registry import (
+    Entry,
+    Registry,
+    Stamped,
+    contested_relations,
+    held_values,
+)
 from mbench.core.legality._refusal import Reason, Refusal
 from mbench.core.legality.role_filters import Verdict, judge_gate
 from mbench.core.values.contested import WorldValue
-from mbench.core.values.protocol import ValueClass
+from mbench.core.values.protocol import UniquenessScope, ValueClass
 from mbench.packs.spec import Gate, LoadedPack
 
 
@@ -102,3 +108,30 @@ def current_values(
         for relation in writes
         if relation in entry.values
     }
+
+
+def refuse_taken_identifier(
+    entity_type: str, written: Iterable[ValueClass], registry: Registry
+) -> Refusal | None:
+    """Refuse an identifier held in its scope, or written twice at once."""
+
+    identifiers = [
+        value for value in written if value.scope is not UniquenessScope.NONE
+    ]
+    if len(set(identifiers)) < len(identifiers):
+        return Refusal(Reason.IDENTIFIER_TAKEN)
+
+    # Terminal entities count, as the registry keeps them: a closed card's
+    # number still names that card. Either side of a conflict may be what
+    # the entity is called. A clash with a later record is that record's to
+    # refuse, when replay reaches it.
+    for entry in registry.entries():
+        for relation in entry.values:
+            for held in held_values(entry, relation):
+                if held in identifiers and (
+                    held.scope is UniquenessScope.SCENARIO
+                    or entry.type == entity_type
+                ):
+                    return Refusal(Reason.IDENTIFIER_TAKEN)
+
+    return None

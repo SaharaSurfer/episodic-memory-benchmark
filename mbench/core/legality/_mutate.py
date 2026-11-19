@@ -16,6 +16,7 @@ from mbench.core.legality._clauses import (
     refuse_sealed,
     refuse_sealed_entity,
     refuse_second_write,
+    refuse_taken_identifier,
     refuse_unchanged_value,
 )
 from mbench.core.legality._disclosures import disclosure_source, disclosures
@@ -91,6 +92,7 @@ def checked(
         or refuse_sealed(mutate.entry, mutate.current.keys())
         or refuse_sealed_entity(mutate.entry, pack)
         or refuse_unchanged_value(writes, mutate.current)
+        or refuse_taken_identifier(mutate.entry.type, writes.values(), registry)
     )
 
     return refusal or mutate

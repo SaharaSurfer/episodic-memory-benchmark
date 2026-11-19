@@ -8,6 +8,7 @@ from mbench.core.legality._clauses import (
     fits,
     passes,
     refuse_invalid_values,
+    refuse_taken_identifier,
 )
 from mbench.core.legality._disclosures import disclosure_source, disclosures
 from mbench.core.legality._refusal import Reason, Refusal
@@ -80,6 +81,9 @@ def checked(
         refuse_invalid_values(entity_type.relations, command.writes.items())
         or _refuse_init_on_conflict(init, registry, pack)
         or _refuse_anchor(entity_type, init.writes, registry)
+        or refuse_taken_identifier(
+            entity_type.name, init.writes.values(), registry
+        )
     )
     if refusal is None:
         _check_derivations(init, pack)

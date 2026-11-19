@@ -6,9 +6,12 @@ import pytest
 from mbench.core.folds.registry import Registry, fold_world
 from mbench.core.legality.predicate import Reason, Refusal
 from mbench.core.log_builder import DryRun, LogBuilder
-from mbench.core.records.commands import Command, MutateCommand
+from mbench.core.records.commands import Command, EventCommand, MutateCommand
 from mbench.core.records.log import AcceptedCommand, Log
 from mbench.core.values.factory import (
+    AgreeingDraft,
+    AvoidList,
+    ConflictDraft,
     Factory,
     Fillable,
     FillReason,
@@ -274,7 +277,12 @@ def test_stepping_a_run_after_its_result_draws_nothing_from_it() -> None:
 class _UnusableFactory(Factory):
     """A factory that fails the test if it is asked to fill anything."""
 
-    def fill(self, command: Fillable, registry: Registry) -> Fillable:
+    def fill(
+        self,
+        command: Fillable,
+        registry: Registry,
+        avoid: AvoidList | None = None,
+    ) -> EventCommand:
         raise AssertionError("the command should not have been filled")
 
 
@@ -289,6 +297,42 @@ def test_filling_a_step_reads_the_registry_of_the_run() -> None:
 
     assert isinstance(fee, AcceptedCommand)
     assert run.accepted == (opened, fee)
+
+
+@pytest.mark.parametrize(
+    "draft",
+    [
+        AgreeingDraft(
+            session=ISSUED_IN,
+            initiator="BANK",
+            action_type="CHANGE_ACCOUNT_FEE",
+            referent=MISSING,
+            sources=("letter", "app_notification"),
+        ),
+        ConflictDraft(
+            session=ISSUED_IN,
+            initiator="BANK",
+            referent=MISSING,
+            relation="hasMonthlyFee",
+            sources=("letter", "email"),
+        ),
+    ],
+    ids=["agreeing", "conflicting"],
+)
+def test_a_draft_is_filled_and_decided_in_the_run(
+    draft: AgreeingDraft | ConflictDraft,
+) -> None:
+    run = _builder().dry_run()
+    factory = Factory(0, LOADED_PACK)
+    opened = run.fill_and_decide(unfilled_opening(), factory)
+    assert isinstance(opened, AcceptedCommand)
+
+    outcome = run.fill_and_decide(
+        replace(draft, referent=created_id(opened.records)), factory
+    )
+
+    assert isinstance(outcome, AcceptedCommand)
+    assert run.accepted == (opened, outcome)
 
 
 def test_a_fill_refusal_is_returned_and_ends_the_run() -> None:

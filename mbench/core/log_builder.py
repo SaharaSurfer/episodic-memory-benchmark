@@ -109,7 +109,7 @@ class DryRun:
         if self._refused:
             raise ValueError("this dry run was refused")
 
-    def _check_step(self, command: Command) -> None:
+    def _check_step(self, command: Command | Fillable) -> None:
         """Raise if the command cannot be this run's next step."""
 
         self._check_not_refused()

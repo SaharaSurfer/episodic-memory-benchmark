@@ -1,7 +1,8 @@
-from collections.abc import Mapping
-from dataclasses import replace
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from types import MappingProxyType
+from typing import ClassVar, Self
 
 from mbench.core.folds.graph import Graph, fold_trace
 from mbench.core.folds.registry import Registry
@@ -23,7 +24,7 @@ from mbench.core.records.log import (
     Log,
     Record,
 )
-from mbench.core.values.protocol import ValueClass
+from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import (
     Copy,
     EntityType,
@@ -257,6 +258,12 @@ def issue(account: NodeId, session: int) -> InitCommand:
     )
 
 
+def unfilled_card(account: NodeId) -> InitCommand:
+    """A command issuing a card on the account, no value chosen yet."""
+
+    return replace(issue(account, ISSUED_IN), writes={})
+
+
 def replacement(card: NodeId, session: int) -> InitCommand:
     """A command issuing a replacement of the card."""
 
@@ -477,6 +484,82 @@ def with_role_filter(pack: LoadedPack, role_filter: RoleFilter) -> LoadedPack:
     return replace(
         pack,
         role_filters={**pack.role_filters, role_filter.name: role_filter},
+    )
+
+
+@dataclass(frozen=True)
+class BranchName(ZonedValueClass):
+    """A name without a uniqueness scope, the same zone ignoring case."""
+
+    tag: ClassVar[str] = "branch_name"
+    payload: str
+
+    def is_valid(self) -> bool:
+        """Any name."""
+
+        return True
+
+    def render(self) -> str:
+        """The name as spelled."""
+
+        return self.payload
+
+    def zone(self, other: Self) -> Zone:
+        """Same if the names differ at most in case, far otherwise."""
+
+        same = other.payload.casefold() == self.payload.casefold()
+
+        return Zone.SAME if same else Zone.FAR
+
+    def near(self) -> Iterator[Self]:
+        """Nothing: the near zone is empty."""
+
+        yield from ()
+
+
+OPEN_BRANCH = "OPEN_BRANCH"
+RECODE_BRANCH = MutateAction(
+    "RECODE_BRANCH", referent_type="BRANCH", relation="code"
+)
+
+# Anchored on a class with no scope, so only the anchor rule can redraw it.
+# Its codes are identifiers outside the anchor, so a MUTATE may write them.
+BRANCH_PACK = replace(
+    with_action(
+        with_action(
+            with_entity_type(
+                LOADED_PACK,
+                EntityType(
+                    "BRANCH",
+                    relations={
+                        "name": BranchName,
+                        "code": ReferenceNumber,
+                        "spareCode": ReferenceNumber,
+                    },
+                    anchor=("name",),
+                    nameable=True,
+                ),
+            ),
+            InitAction(OPEN_BRANCH, referent_type="BRANCH"),
+        ),
+        RECODE_BRANCH,
+    ),
+    framings={
+        **LOADED_PACK.framings,
+        RECODE_BRANCH.name: (Framing("BANK", "letter"),),
+    },
+)
+
+
+def open_branch(session: int = OPENED_IN, **writes: ValueClass) -> InitCommand:
+    """A command opening a branch with these values."""
+
+    return InitCommand(
+        session=session,
+        initiator="BANK",
+        action_type=OPEN_BRANCH,
+        source="operator",
+        writes=writes,
     )
 
 

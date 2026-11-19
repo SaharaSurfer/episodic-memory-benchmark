@@ -28,6 +28,7 @@ class Reason(Enum):
     ENTITY_SEALED = "entity_sealed"
     ANCHOR_SAME_ZONE = "anchor_same_zone"
     UNCHANGED_VALUE = "unchanged_value"
+    IDENTIFIER_TAKEN = "identifier_taken"
 
 
 @dataclass(frozen=True)

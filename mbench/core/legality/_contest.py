@@ -15,6 +15,7 @@ from mbench.core.legality._clauses import (
     refuse_sealed,
     refuse_sealed_entity,
     refuse_second_write,
+    refuse_taken_identifier,
     refuse_unchanged_value,
 )
 from mbench.core.legality._refusal import Reason, Refusal
@@ -103,8 +104,10 @@ def checked(
     if isinstance(writers, Refusal):
         return writers
 
-    refusal = refuse_sealed_entity(entry, pack) or refuse_unchanged_value(
-        writes, current
+    refusal = (
+        refuse_sealed_entity(entry, pack)
+        or refuse_unchanged_value(writes, current)
+        or refuse_taken_identifier(entry.type, (command.a, command.b), registry)
     )
 
     return refusal or Contest(command, writes, writers)
