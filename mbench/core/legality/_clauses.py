@@ -1,9 +1,9 @@
 from collections.abc import Iterable, Mapping
 
-from mbench.core.folds.registry import Entry, Stamped, is_contested
+from mbench.core.folds.registry import Entry, Stamped, contested_relations
 from mbench.core.legality._refusal import Reason, Refusal
 from mbench.core.legality.role_filters import Verdict, judge_gate
-from mbench.core.values.contested import Contested, WorldValue
+from mbench.core.values.contested import WorldValue
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import Gate, LoadedPack
 
@@ -53,10 +53,10 @@ def fits(
     return cls is not None and isinstance(value, cls) and value.is_valid()
 
 
-def refuse_sealed(values: Iterable[Stamped]) -> Refusal | None:
-    """Refuse a command touching these values if any is contested."""
+def refuse_sealed(entry: Entry, relations: Iterable[str]) -> Refusal | None:
+    """Refuse a command touching these relations if any is contested."""
 
-    if any(isinstance(current.value, Contested) for current in values):
+    if not contested_relations(entry).isdisjoint(relations):
         return Refusal(Reason.PAIR_SEALED)
 
     return None
@@ -73,7 +73,7 @@ def refuse_sealed_entity(entry: Entry, pack: LoadedPack) -> Refusal | None:
 def entity_is_sealed(entry: Entry, pack: LoadedPack) -> bool:
     """Whether a relation legality reads holds a contested value."""
 
-    contested = {r for r in entry.values if is_contested(entry, r)}
+    contested = contested_relations(entry)
     if not contested:
         return False
 

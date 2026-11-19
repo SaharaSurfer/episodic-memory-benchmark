@@ -1,7 +1,13 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from mbench.core.folds.registry import Entry, Registry, is_live
+from mbench.core.folds.registry import (
+    Entry,
+    Liveness,
+    Registry,
+    liveness,
+    true_value,
+)
 from mbench.core.legality._clauses import (
     current_values,
     passes,
@@ -88,7 +94,7 @@ def checked(
         or refuse_invalid_values(relations, stated)
         or _refuse_contest_sources(command, pack)
         or _refuse_contest_values(command, entry)
-        or refuse_sealed(current.values())
+        or refuse_sealed(entry, current.keys())
     )
     if refusal is not None:
         return refusal
@@ -116,7 +122,13 @@ def _contested_referent(
         return Refusal(Reason.REFERENT_MISSING)
 
     # It names no ActionType, so it has no referent type or gate of its own.
-    return entry if is_live(entry, pack) else Refusal(Reason.NOT_LIVE)
+    # An undecided status passes here and is refused as sealed: by
+    # `refuse_sealed` if the command contests the status, else ENTITY_SEALED
+    # by `refuse_sealed_entity`.
+    if liveness(entry, pack) is Liveness.TERMINAL:
+        return Refusal(Reason.NOT_LIVE)
+
+    return entry
 
 
 def _refuse_contest_sources(
@@ -185,8 +197,8 @@ def _find_writer(
 ) -> MutateAction | None:
     """The ActionType that would write the value over the pair's current."""
 
-    stamped = entry.values.get(relation)
-    if stamped is None or isinstance(stamped.value, Contested):
+    current = true_value(entry, relation)
+    if current is None:
         return None
 
-    return pack.action_for(entry.type, relation, (stamped.value, value))
+    return pack.action_for(entry.type, relation, (current, value))

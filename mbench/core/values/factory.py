@@ -3,10 +3,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from mbench.core.folds.registry import Entry, Registry
+from mbench.core.folds.registry import Registry, held_values, true_values
 from mbench.core.legality.predicate import Reason, check
 from mbench.core.records.commands import InitCommand, MutateCommand
-from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import UniquenessScope, ValueClass
 from mbench.core.values.samplers import MissingRead, draw, draw_step
 from mbench.packs.spec import InitAction, LoadedPack, MutateAction
@@ -147,7 +146,9 @@ class Factory:
         if entry is None or entry.type != action.referent_type:
             return FillRefusal(FillReason.NO_CURRENT_VALUE)
 
-        values = _plain_values(entry)
+        # A conflict has no true value for a step to start from or a sampler
+        # to read.
+        values = true_values(entry)
         current = values.get(action.relation)
         if current is None:
             return FillRefusal(FillReason.NO_CURRENT_VALUE)
@@ -190,8 +191,9 @@ def _taken_identifiers(
     # Terminal entities count, as the registry keeps them: a closed card's
     # number still names that card.
     for entry in registry.entries():
-        for stamped in entry.values.values():
-            for value in _held_values(stamped.value):
+        # Either side of a conflict may be what the entity is called.
+        for relation in entry.values:
+            for value in held_values(entry, relation):
                 if value.scope is UniquenessScope.SCENARIO or (
                     value.scope is UniquenessScope.TYPE
                     and entry.type == entity_type
@@ -199,13 +201,6 @@ def _taken_identifiers(
                     taken.add(value)
 
     return frozenset(taken)
-
-
-def _held_values(value: WorldValue) -> frozenset[ValueClass]:
-    """The plain values a pair holds, both sides of a conflict included."""
-
-    # Either side of a conflict may be what the entity is called.
-    return value.members if isinstance(value, Contested) else frozenset({value})
 
 
 def _repeats_identifier(
@@ -222,15 +217,3 @@ def _repeats_identifier(
     return len(set(identifiers)) < len(identifiers) or not taken.isdisjoint(
         identifiers
     )
-
-
-def _plain_values(entry: Entry) -> dict[str, ValueClass]:
-    """The entity's current values, without any contested one."""
-
-    # A conflict has no true value for a step to start from or a sampler to
-    # read.
-    return {
-        relation: stamped.value
-        for relation, stamped in entry.values.items()
-        if not isinstance(stamped.value, Contested)
-    }

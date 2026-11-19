@@ -1,7 +1,13 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from mbench.core.folds.registry import Entry, Registry, Stamped, is_live
+from mbench.core.folds.registry import (
+    Entry,
+    Liveness,
+    Registry,
+    Stamped,
+    liveness,
+)
 from mbench.core.legality._caller_bugs import wrong_shape
 from mbench.core.legality._clauses import (
     current_values,
@@ -82,7 +88,7 @@ def checked(
     refusal = (
         refuse_second_write(command.session, mutate.current)
         or refuse_invalid_values(relations, writes.items())
-        or refuse_sealed(mutate.current.values())
+        or refuse_sealed(mutate.entry, mutate.current.keys())
         or refuse_sealed_entity(mutate.entry, pack)
         or refuse_unchanged_value(writes, mutate.current)
     )
@@ -109,9 +115,11 @@ def _resolve_referent(
         return Refusal(Reason.GATE_FAILED)
 
     # A gate that reads the status has named the statuses it admits, a
-    # terminal one included, so it, not liveness, decides.
+    # terminal one included, so it, not liveness, decides. An undecided
+    # status passes here and is refused as sealed: by `refuse_sealed` if the
+    # command writes the status, else ENTITY_SEALED by `refuse_sealed_entity`.
     status = pack.entity_types[entry.type].status
-    if status not in action.gate and not is_live(entry, pack):
+    if status not in action.gate and liveness(entry, pack) is Liveness.TERMINAL:
         return Refusal(Reason.NOT_LIVE)
 
     return Mutate(

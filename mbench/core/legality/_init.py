@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from mbench.core.folds.registry import Entry, Registry
+from mbench.core.folds.registry import Entry, Registry, true_value
 from mbench.core.legality._caller_bugs import wrong_shape
 from mbench.core.legality._clauses import (
     entity_is_sealed,
@@ -15,7 +15,6 @@ from mbench.core.legality.role_filters import Verdict, judge
 from mbench.core.records.commands import InitCommand
 from mbench.core.records.ids import IdAllocator, NodeId
 from mbench.core.records.log import InitEvent, Link, Record
-from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import ValueClass, Zone, ZonedValueClass
 from mbench.packs.spec import ByType, Copy, EntityType, InitAction, LoadedPack
 
@@ -308,21 +307,19 @@ def _derived_values(
     for relation, derivation in action.derives.items():
         source = endpoints.get(derivation.via)
         value = None if source is None else _derive(derivation, source)
-        if value is not None and not isinstance(value, Contested):
+        if value is not None:
             derived[relation] = value
 
     return derived
 
 
-def _derive(derivation: Copy | ByType, source: Entry) -> WorldValue | None:
+def _derive(derivation: Copy | ByType, source: Entry) -> ValueClass | None:
     """The value the derivation reads off its source entity, if any."""
 
     if isinstance(derivation, ByType):
         return derivation.values.get(source.type)
 
-    stamped = source.values.get(derivation.relation)
-
-    return None if stamped is None else stamped.value
+    return true_value(source, derivation.relation)
 
 
 def _copied_links(

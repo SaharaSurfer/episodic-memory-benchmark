@@ -1,5 +1,6 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 
 from mbench.core.records.frozen import freeze
 from mbench.core.records.ids import NodeId
@@ -10,6 +11,7 @@ from mbench.core.records.log import (
     Record,
 )
 from mbench.core.values.contested import Contested, WorldValue
+from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import LoadedPack
 
 
@@ -60,22 +62,71 @@ class Registry:
         return self._entries.get(entity)
 
 
-def is_live(entry: Entry, pack: LoadedPack) -> bool:
-    """Whether the entity's current status is not terminal for its type."""
+class Liveness(Enum):
+    """Whether an entity's status leaves it in the world's play."""
+
+    LIVE = "live"
+    TERMINAL = "terminal"
+    # A contested status has no true value, so neither answer can be read.
+    UNDECIDED = "undecided"
+
+
+def liveness(entry: Entry, pack: LoadedPack) -> Liveness:
+    """Whether the entity's status is non-terminal, terminal or contested."""
 
     entity_type = pack.entity_types[entry.type]
     if entity_type.status is None:
-        return True
+        return Liveness.LIVE
 
-    return entry.values[entity_type.status].value not in entity_type.terminal
+    status = entry.values[entity_type.status].value
+    if isinstance(status, Contested):
+        return Liveness.UNDECIDED
+
+    return (
+        Liveness.TERMINAL if status in entity_type.terminal else Liveness.LIVE
+    )
 
 
-def is_contested(entry: Entry, relation: str) -> bool:
-    """Whether the entity's pair for the relation holds a contested value."""
+def true_value(entry: Entry, relation: str) -> ValueClass | None:
+    """The pair's value, or None if the relation is absent or contested."""
 
     current = entry.values.get(relation)
+    if current is None or isinstance(current.value, Contested):
+        return None
 
-    return current is not None and isinstance(current.value, Contested)
+    return current.value
+
+
+def true_values(entry: Entry) -> dict[str, ValueClass]:
+    """Every relation's value, leaving out the contested ones."""
+
+    return {
+        relation: stamped.value
+        for relation, stamped in entry.values.items()
+        if not isinstance(stamped.value, Contested)
+    }
+
+
+def held_values(entry: Entry, relation: str) -> frozenset[ValueClass]:
+    """The values the pair holds: both sides of a conflict, or its one value."""
+
+    current = entry.values.get(relation)
+    if current is None:
+        return frozenset()
+    if isinstance(current.value, Contested):
+        return current.value.members
+
+    return frozenset({current.value})
+
+
+def contested_relations(entry: Entry) -> frozenset[str]:
+    """The relations whose pair holds a conflict."""
+
+    return frozenset(
+        relation
+        for relation, stamped in entry.values.items()
+        if isinstance(stamped.value, Contested)
+    )
 
 
 def evolve_world(

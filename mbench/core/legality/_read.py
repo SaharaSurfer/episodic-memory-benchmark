@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 
-from mbench.core.folds.registry import Entry, Registry
+from mbench.core.folds.registry import Entry, Registry, true_value
 from mbench.core.legality._clauses import refuse_sealed
 from mbench.core.legality._refusal import Reason, Refusal
 from mbench.core.records.commands import ReadCommand
 from mbench.core.records.ids import IdAllocator
 from mbench.core.records.log import READ, Disclosure, Record
-from mbench.core.values.contested import Contested, WorldValue
 from mbench.core.values.protocol import ValueClass
 
 
@@ -31,10 +30,10 @@ class Read:
                 initiator=self.command.initiator,
                 entity=self.command.entity,
                 relation=relation,
-                value=_readable(current.value),
+                value=_readable(self.entry, relation),
                 node_id=allocator.allocate(),
             )
-            for relation, current in self.entry.values.items()
+            for relation in self.entry.values
         )
 
 
@@ -46,14 +45,15 @@ def checked(command: ReadCommand, registry: Registry) -> Refusal | Read:
         return Refusal(Reason.REFERENT_MISSING)
 
     # A READ states every value of its entity, so one contested pair is enough.
-    return refuse_sealed(entry.values.values()) or Read(command, entry)
+    return refuse_sealed(entry, entry.values.keys()) or Read(command, entry)
 
 
-def _readable(current: WorldValue) -> ValueClass:
+def _readable(entry: Entry, relation: str) -> ValueClass:
     """The value a READ states, which a conflict, having no truth, is not."""
 
     # A READ of an entity holding a conflict is refused as sealed, so the
     # values it states are never contested.
-    assert not isinstance(current, Contested)
+    value = true_value(entry, relation)
+    assert value is not None
 
-    return current
+    return value

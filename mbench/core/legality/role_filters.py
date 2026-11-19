@@ -2,7 +2,14 @@ from collections.abc import Iterable, Iterator, Mapping
 from enum import Enum
 from types import MappingProxyType
 
-from mbench.core.folds.registry import Entry, Registry, is_contested, is_live
+from mbench.core.folds.registry import (
+    Entry,
+    Liveness,
+    Registry,
+    contested_relations,
+    liveness,
+    true_value,
+)
 from mbench.core.records.ids import NodeId
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import Gate, Linker, LoadedPack, RoleFilter
@@ -18,6 +25,14 @@ class Verdict(Enum):
 
 
 _NO_BINDINGS: Mapping[str, NodeId] = MappingProxyType({})
+
+_LIVENESS_VERDICTS: Mapping[Liveness, Verdict] = MappingProxyType(
+    {
+        Liveness.LIVE: Verdict.PASS,
+        Liveness.TERMINAL: Verdict.FAIL,
+        Liveness.UNDECIDED: Verdict.UNDECIDED,
+    }
+)
 
 
 def judge(
@@ -72,12 +87,12 @@ def _judge_value(
 
     if relation not in entry.values:
         return Verdict.FAIL
-    if is_contested(entry, relation):
+    if relation in contested_relations(entry):
         return Verdict.UNDECIDED
 
     return (
         Verdict.PASS
-        if entry.values[relation].value in admitted
+        if true_value(entry, relation) in admitted
         else Verdict.FAIL
     )
 
@@ -85,10 +100,7 @@ def _judge_value(
 def _judge_live(entry: Entry, pack: LoadedPack) -> Verdict:
     """Whether the entity's current status is surely non-terminal."""
 
-    if _status_is_contested(entry, pack):
-        return Verdict.UNDECIDED
-
-    return Verdict.PASS if is_live(entry, pack) else Verdict.FAIL
+    return _LIVENESS_VERDICTS[liveness(entry, pack)]
 
 
 def _judge_no_live_linker(
@@ -129,14 +141,6 @@ def _not(verdict: Verdict) -> Verdict:
         return verdict
 
     return Verdict.FAIL if verdict is Verdict.PASS else Verdict.PASS
-
-
-def _status_is_contested(entry: Entry, pack: LoadedPack) -> bool:
-    """Whether the entity's status holds a contested value."""
-
-    status = pack.entity_types[entry.type].status
-
-    return status is not None and is_contested(entry, status)
 
 
 def _linkers(
