@@ -65,7 +65,7 @@ def generate_log(
             session += 1
 
         run = builder.dry_run()
-        outcome = _draw_and_decide(run, session, stream, factory, pack)
+        outcome = draw_and_decide(run, session, stream, factory, pack)
         if isinstance(outcome, AcceptedCommand):
             builder.commit(run)
 
@@ -117,7 +117,7 @@ def shape_of(command: Command, pack: LoadedPack) -> Shape:
             return Shape.CONFLICTING
 
 
-def _draw_and_decide(
+def draw_and_decide(
     run: DryRun,
     session: int,
     stream: random.Random,
