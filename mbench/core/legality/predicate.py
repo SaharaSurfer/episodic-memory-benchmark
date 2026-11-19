@@ -103,6 +103,8 @@ def check(
 ) -> Refusal | None:
     """Why the command is illegal at this registry, if it is."""
 
+    _check_names(command, pack)
+
     if isinstance(command, ReadCommand):
         return refuse_missing_entity(command, registry) or refuse_sealed_read(
             command, registry
@@ -112,7 +114,6 @@ def check(
     _check_links(command, pack)
     _check_fixed_values(command, pack)
     _check_no_derived_writes(command, pack)
-    _check_sources(command, pack)
 
     refusal = (
         refuse_unfit_referent(command, registry, pack)
@@ -783,25 +784,39 @@ def _check_derivations(
         raise ValueError(f"{action.name} derives unfit {sorted(unfit)}")
 
 
-def _check_sources(command: EventCommand, pack: LoadedPack) -> None:
-    """Raise unless a double disclosure names declared sources."""
+def _check_names(command: Command, pack: LoadedPack) -> None:
+    """Raise unless the command names a declared initiator and sources."""
 
-    if not isinstance(
+    # No clause covers the names a command gives, so a wrong one is the
+    # caller's bug, raised rather than refused. A conflict may come from one
+    # document twice, but an agreeing pair needs two.
+    if command.initiator not in pack.actors:
+        raise ValueError(f"the pack declares no initiator {command.initiator}")
+
+    sources = _named_sources(command)
+    if isinstance(command, AgreeingDoubleDisclosureCommand):
+        first, second = sources
+        if first == second:
+            raise ValueError(
+                f"{first} is named twice, not two different sources"
+            )
+
+    unknown = set(sources) - pack.sources.keys()
+    if unknown:
+        raise ValueError(f"the pack declares no source {sorted(unknown)}")
+
+
+def _named_sources(command: Command) -> tuple[str, ...]:
+    """The sources the command names, none if it leaves them to the default."""
+
+    if isinstance(
         command,
         AgreeingDoubleDisclosureCommand | ConflictingDoubleDisclosureCommand,
     ):
-        return
+        return command.sources
 
-    # No clause covers the sources an agreeing pair names, so a wrong pair is
-    # the caller's bug, raised rather than refused. A conflict may come from
-    # one document twice.
-    first, second = command.sources
-    if isinstance(command, AgreeingDoubleDisclosureCommand) and first == second:
-        raise ValueError(f"{first} is named twice, not two different sources")
-
-    unknown = set(command.sources) - pack.sources.keys()
-    if unknown:
-        raise ValueError(f"the pack declares no source {sorted(unknown)}")
+    # None leaves the source to the default, which names a declared one.
+    return () if command.source is None else (command.source,)
 
 
 def _init_action(command: InitCommand, pack: LoadedPack) -> InitAction:

@@ -210,6 +210,20 @@ def test_a_command_naming_an_initiator_not_shared_is_refused() -> None:
     assert world.decide(command) == Refusal(5, Reason.INITIATOR_NOT_SHARED)
 
 
+def test_a_command_naming_an_initiator_the_pack_lacks_raises() -> None:
+    # No framing shares an undeclared initiator either, but it is the caller's
+    # bug, not a refusal to count.
+    world = World(BANK_MAY_CLOSE)
+    account = world.open()
+    command = replace(
+        status_contest(account, CONTESTED_IN, FROZEN, CLOSED),
+        initiator="NOBODY",
+    )
+
+    with pytest.raises(ValueError, match="declares no initiator NOBODY"):
+        world.decide(command)
+
+
 @pytest.mark.parametrize("initiator", ["BANK", "CLIENT"])
 def test_the_event_and_disclosures_take_the_shared_initiator_named(
     initiator: str,
