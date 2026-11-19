@@ -275,7 +275,9 @@ def test_a_command_already_holding_values_raises() -> None:
 def test_an_init_command_naming_a_mutate_raises() -> None:
     command = replace(unfilled_opening(), action_type="CHANGE_ACCOUNT_FEE")
 
-    with pytest.raises(TypeError, match="cannot take"):
+    with pytest.raises(
+        TypeError, match="InitCommand cannot take CHANGE_ACCOUNT_FEE"
+    ):
         Factory(0, LOADED_PACK).fill(command, Registry())
 
 
@@ -514,7 +516,9 @@ def test_a_mutate_command_naming_an_init_raises() -> None:
     account = world.open()
     command = replace(_unfilled_reprice(account), action_type=OPEN_ACCOUNT)
 
-    with pytest.raises(TypeError, match="cannot take"):
+    with pytest.raises(
+        TypeError, match=f"MutateCommand cannot take {OPEN_ACCOUNT}"
+    ):
         Factory(0, LOADED_PACK).fill(command, world.registry)
 
 

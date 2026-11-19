@@ -326,13 +326,17 @@ def test_copying_a_relation_the_source_lacks_is_the_packs_bug() -> None:
         world.decide(replacement(card, REPLACED_IN))
 
 
-def test_copying_a_link_the_source_lacks_is_the_packs_bug() -> None:
+@pytest.mark.parametrize(
+    "copy_link",
+    [CopyLink(REPLACES, "noSuchLink"), CopyLink("noSuchLink", CARD_LINK)],
+    ids=["link the source lacks", "via a link the init lacks"],
+)
+def test_copying_a_link_with_nothing_to_copy_is_the_packs_bug(
+    copy_link: CopyLink,
+) -> None:
     action = _init_action(LOADED_PACK, "ISSUE_REPLACEMENT_CARD")
     pack = with_action(
-        LOADED_PACK,
-        replace(
-            action, copied_links={CARD_LINK: CopyLink(REPLACES, "noSuchLink")}
-        ),
+        LOADED_PACK, replace(action, copied_links={CARD_LINK: copy_link})
     )
     world, _, card = _carded_world(pack)
 

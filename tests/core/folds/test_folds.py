@@ -1,5 +1,9 @@
+from typing import Any
+
+import pytest
+
 from mbench.core.folds.graph import fold_trace
-from mbench.core.folds.registry import fold_world
+from mbench.core.folds.registry import Entry, fold_world
 from mbench.core.records.ids import NodeId
 from mbench.core.records.log import Record
 from mbench.core.values.protocol import ValueClass
@@ -10,6 +14,8 @@ from tests.core.records.handmade import (
 )
 from tests.testpack.pack import LOADED_PACK
 from tests.testpack.values import LastFour
+
+ENTRY_MAPS = pytest.mark.parametrize("field", ["values", "links"])
 
 
 def _opened(entity: str, node: str, value: ValueClass) -> tuple[Record, ...]:
@@ -25,6 +31,12 @@ def _opened(entity: str, node: str, value: ValueClass) -> tuple[Record, ...]:
             node_id=NodeId(node),
         ),
     )
+
+
+def _entry_holding(field: str, given: dict[str, Any]) -> Entry:
+    maps: dict[str, Any] = {"values": {}, field: given}
+
+    return Entry(type="DepositAccount", id=NodeId("aaaaa"), **maps)
 
 
 def test_both_folds_start_from_the_state_they_are_given() -> None:
@@ -54,3 +66,23 @@ def test_the_folds_accept_records_the_predicate_would_refuse() -> None:
     assert entry is not None
     assert entry.values["lastFour"].value == bad_value
     assert {node.id for node in graph.entity_nodes()} == {NodeId("aaaaa")}
+
+
+@ENTRY_MAPS
+def test_an_entrys_maps_cannot_be_changed_through_it(field: str) -> None:
+    entry = _entry_holding(field, {"key": "before"})
+
+    with pytest.raises(TypeError, match="item assignment"):
+        getattr(entry, field)["key"] = "after"
+
+
+@ENTRY_MAPS
+def test_an_entry_keeps_its_maps_when_the_given_one_changes(
+    field: str,
+) -> None:
+    given = {"key": "before"}
+    entry = _entry_holding(field, given)
+
+    given["key"] = "after"
+
+    assert getattr(entry, field) == {"key": "before"}

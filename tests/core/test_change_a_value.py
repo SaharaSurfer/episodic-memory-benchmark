@@ -200,33 +200,39 @@ def test_a_chain_returning_to_an_earlier_value_counts_every_write() -> None:
 
 
 @pytest.mark.parametrize(
-    "command",
+    ("command", "message"),
     [
-        lambda account: MutateCommand(
-            session=2,
-            initiator="BANK",
-            action_type="OPEN_DEPOSIT_ACCOUNT",
-            source="letter",
-            referent=account,
-            value=MonetaryAmount(Decimal("0")),
+        (
+            lambda account: MutateCommand(
+                session=2,
+                initiator="BANK",
+                action_type="OPEN_DEPOSIT_ACCOUNT",
+                source="letter",
+                referent=account,
+                value=MonetaryAmount(Decimal("0")),
+            ),
+            "MutateCommand cannot take OPEN_DEPOSIT_ACCOUNT",
         ),
-        lambda _: InitCommand(
-            session=2,
-            initiator="CLIENT",
-            action_type="CHANGE_ACCOUNT_FEE",
-            source="customer",
-            writes=WRITES,
+        (
+            lambda _: InitCommand(
+                session=2,
+                initiator="CLIENT",
+                action_type="CHANGE_ACCOUNT_FEE",
+                source="customer",
+                writes=WRITES,
+            ),
+            "InitCommand cannot take CHANGE_ACCOUNT_FEE",
         ),
     ],
     ids=["mutate naming an init", "init naming a mutate"],
 )
 def test_a_command_naming_an_action_of_the_other_shape_raises(
-    command: Callable[[NodeId], Command],
+    command: Callable[[NodeId], Command], message: str
 ) -> None:
     world = World()
     account = world.open()
 
-    with pytest.raises(TypeError, match="cannot take"):
+    with pytest.raises(TypeError, match=message):
         world.decide(command(account))
 
 

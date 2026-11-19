@@ -10,3 +10,6 @@ __pycache__/
 
 # Hypothesis example database
 .hypothesis/
+
+# Mutation tool working directory
+mutants/

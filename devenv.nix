@@ -52,6 +52,16 @@ in {
     before = ["devenv:enterTest"];
   };
 
+  scripts.mutation-run = {
+    exec = ''
+      cd ${config.devenv.root}
+      rm -rf mutants
+      ${config.devenv.root}/.venv/bin/mutmut run
+      ${config.devenv.root}/.venv/bin/mutmut results
+    '';
+    description = "Mutation-test the legality and folds modules from clean";
+  };
+
   git-hooks.hooks = {
     trim-trailing-whitespace.enable = true;
     end-of-file-fixer.enable = true;

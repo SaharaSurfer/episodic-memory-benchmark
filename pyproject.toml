@@ -18,6 +18,7 @@ dev = [
     "mypy (>=1.19.1,<2.0.0)",
     "pytest (>=9.2.0,<10.0.0)",
     "hypothesis (>=6.170.15,<7.0.0)",
+    "mutmut (>=3.8.1,<4.0.0)",
 ]
 
 [tool.poetry]
@@ -50,3 +51,15 @@ strict = true
 [tool.pytest]
 testpaths = ["tests"]
 strict = true
+
+[tool.mutmut]
+source_paths = ["mbench/"]
+only_mutate = [
+    "mbench/core/legality/*",
+    "mbench/core/folds/*",
+]
+pytest_add_cli_args = [
+    "--hypothesis-profile=mutation",
+    "--deselect=tests/core/test_accepted_commands.py::test_only_decide_makes_an_accepted_command",
+]
+use_git_change_detection = false
