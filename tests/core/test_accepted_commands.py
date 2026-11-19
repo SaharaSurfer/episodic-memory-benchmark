@@ -59,19 +59,19 @@ def test_the_check_finds_nothing_against_a_legal_command(
     [
         (
             lambda _: open_account(2),
-            Refusal(7, Reason.ANCHOR_SAME_ZONE),
+            Refusal(Reason.ANCHOR_SAME_ZONE),
         ),
         (
             lambda _: issue(MISSING, 2),
-            Refusal(1, Reason.ENDPOINT_MISSING),
+            Refusal(Reason.ENDPOINT_MISSING),
         ),
         (
             lambda account: reprice(account, OPENED_IN, "3.90"),
-            Refusal(2, Reason.PAIR_ALREADY_WRITTEN),
+            Refusal(Reason.PAIR_ALREADY_WRITTEN),
         ),
         (
             lambda _: read(MISSING, 2),
-            Refusal(1, Reason.REFERENT_MISSING),
+            Refusal(Reason.REFERENT_MISSING),
         ),
     ],
     ids=["init", "init with a link", "mutate", "read"],

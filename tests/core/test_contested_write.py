@@ -224,7 +224,7 @@ def test_a_stored_disclosure_of_either_value_is_true_and_of_another_not() -> (
     assert refuse_untrue_disclosure(first, registry) is None
     assert refuse_untrue_disclosure(second, registry) is None
     assert refuse_untrue_disclosure(stale, registry) == Refusal(
-        4, Reason.UNTRUE_DISCLOSURE
+        Reason.UNTRUE_DISCLOSURE
     )
 
 
@@ -233,31 +233,31 @@ def test_a_stored_disclosure_of_either_value_is_true_and_of_another_not() -> (
     [
         (
             lambda _: contest(MISSING, CONTESTED_IN, A, B),
-            Refusal(1, Reason.REFERENT_MISSING),
+            Refusal(Reason.REFERENT_MISSING),
         ),
         (
             lambda account: contest(account, OPENED_IN, A, B),
-            Refusal(2, Reason.PAIR_ALREADY_WRITTEN),
+            Refusal(Reason.PAIR_ALREADY_WRITTEN),
         ),
         (
             lambda account: replace(
                 contest(account, CONTESTED_IN, A, B),
                 a=MonetaryAmount(Decimal("1")),
             ),
-            Refusal(3, Reason.INVALID_VALUE),
+            Refusal(Reason.INVALID_VALUE),
         ),
         (
             lambda account: replace(
                 contest(account, CONTESTED_IN, A, B),
                 b=InterestRate(Decimal("100")),
             ),
-            Refusal(3, Reason.INVALID_VALUE),
+            Refusal(Reason.INVALID_VALUE),
         ),
         (
             lambda account: replace(
                 contest(account, CONTESTED_IN, A, B), relation="hasNoSuchThing"
             ),
-            Refusal(3, Reason.INVALID_VALUE),
+            Refusal(Reason.INVALID_VALUE),
         ),
     ],
     ids=[
@@ -285,7 +285,7 @@ def test_a_contested_write_on_a_closed_referent_is_refused() -> None:
 
     outcome = world.decide(contest(account, CONTESTED_IN, A, B))
 
-    assert outcome == Refusal(1, Reason.NOT_LIVE)
+    assert outcome == Refusal(Reason.NOT_LIVE)
 
 
 def test_contesting_a_relation_the_referent_type_lacks_is_refused() -> None:
@@ -294,4 +294,4 @@ def test_contesting_a_relation_the_referent_type_lacks_is_refused() -> None:
 
     outcome = world.decide(contest(card, CONTESTED_IN, A, B))
 
-    assert outcome == Refusal(3, Reason.INVALID_VALUE)
+    assert outcome == Refusal(Reason.INVALID_VALUE)

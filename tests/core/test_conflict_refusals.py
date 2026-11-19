@@ -45,7 +45,7 @@ def test_two_sources_of_unequal_authority_are_refused(
 
     outcome = world.decide(contest(account, CONTESTED_IN, A, B, sources))
 
-    assert outcome == Refusal(5, Reason.UNEQUAL_AUTHORITY)
+    assert outcome == Refusal(Reason.UNEQUAL_AUTHORITY)
 
 
 @pytest.mark.parametrize("speaker", ["customer", "operator"])
@@ -54,7 +54,7 @@ def test_one_speaker_twice_is_refused(speaker: str) -> None:
     account = world.open()
     command = contest(account, CONTESTED_IN, A, B, (speaker, speaker))
 
-    assert world.decide(command) == Refusal(5, Reason.SPEAKER_TWICE)
+    assert world.decide(command) == Refusal(Reason.SPEAKER_TWICE)
 
 
 @pytest.mark.parametrize(
@@ -82,7 +82,7 @@ def test_a_equal_to_b_is_refused() -> None:
 
     outcome = world.decide(contest(account, CONTESTED_IN, A, A))
 
-    assert outcome == Refusal(5, Reason.CONTESTED_VALUES_EQUAL)
+    assert outcome == Refusal(Reason.CONTESTED_VALUES_EQUAL)
 
 
 @pytest.mark.parametrize(
@@ -97,7 +97,7 @@ def test_either_value_equal_to_the_current_one_is_refused(
 
     outcome = world.decide(contest(account, CONTESTED_IN, a, b))
 
-    assert outcome == Refusal(5, Reason.CONTESTED_VALUE_IS_CURRENT)
+    assert outcome == Refusal(Reason.CONTESTED_VALUE_IS_CURRENT)
 
 
 def test_a_value_only_an_earlier_version_held_is_not_refused_here() -> None:
@@ -124,7 +124,7 @@ def test_a_value_no_action_can_write_from_the_current_one_is_refused(
 
     outcome = world.decide(status_contest(account, CONTESTED_IN, a, b))
 
-    assert outcome == Refusal(5, Reason.NO_WRITER)
+    assert outcome == Refusal(Reason.NO_WRITER)
 
 
 def test_a_pair_holding_no_value_has_nothing_to_write_from() -> None:
@@ -133,7 +133,7 @@ def test_a_pair_holding_no_value_has_nothing_to_write_from() -> None:
 
     outcome = world.decide(contest(account, CONTESTED_IN, A, B))
 
-    assert outcome == Refusal(5, Reason.NO_WRITER)
+    assert outcome == Refusal(Reason.NO_WRITER)
 
 
 @pytest.mark.parametrize(
@@ -148,7 +148,7 @@ def test_a_value_whose_action_fails_its_gate_is_refused(
 
     outcome = world.decide(status_contest(account, CONTESTED_IN, a, b))
 
-    assert outcome == Refusal(5, Reason.WRITER_GATE_FAILED)
+    assert outcome == Refusal(Reason.WRITER_GATE_FAILED)
 
 
 def test_a_value_whose_action_passes_its_gate_is_accepted() -> None:
@@ -180,7 +180,7 @@ def test_a_status_move_the_owner_states_cannot_be_contested(
 
     outcome = world.decide(status_contest(account, CONTESTED_IN, a, b))
 
-    assert outcome == Refusal(5, Reason.NO_CONTESTABLE_FRAMING)
+    assert outcome == Refusal(Reason.NO_CONTESTABLE_FRAMING)
 
 
 @pytest.mark.parametrize(
@@ -196,7 +196,7 @@ def test_values_whose_framings_share_no_initiator_are_refused(
 
     outcome = world.decide(status_contest(account, CONTESTED_IN, a, b))
 
-    assert outcome == Refusal(5, Reason.INITIATOR_NOT_SHARED)
+    assert outcome == Refusal(Reason.INITIATOR_NOT_SHARED)
 
 
 def test_a_command_naming_an_initiator_not_shared_is_refused() -> None:
@@ -207,7 +207,7 @@ def test_a_command_naming_an_initiator_not_shared_is_refused() -> None:
         initiator="CLIENT",
     )
 
-    assert world.decide(command) == Refusal(5, Reason.INITIATOR_NOT_SHARED)
+    assert world.decide(command) == Refusal(Reason.INITIATOR_NOT_SHARED)
 
 
 def test_a_command_naming_an_initiator_the_pack_lacks_raises() -> None:

@@ -28,7 +28,7 @@ LATER = CONTESTED_IN + 2
 A = "3.75"
 B = "3.60"
 FRESH = "3.90"
-SEALED = Refusal(6, Reason.PAIR_SEALED)
+SEALED = Refusal(Reason.PAIR_SEALED)
 
 
 def _contested_account(world: World) -> NodeId:
@@ -54,7 +54,7 @@ def test_a_dead_referent_is_refused_before_its_contested_pair_is() -> None:
 
     outcome = world.decide(reprice(account, LATER + 1, FRESH))
 
-    assert outcome == Refusal(1, Reason.NOT_LIVE)
+    assert outcome == Refusal(Reason.NOT_LIVE)
 
 
 def test_a_gate_on_another_pair_is_judged_before_sealing() -> None:
@@ -70,7 +70,7 @@ def test_a_gate_on_another_pair_is_judged_before_sealing() -> None:
 
     outcome = world.decide(reprice(account, LATER + 1, FRESH))
 
-    assert outcome == Refusal(1, Reason.GATE_FAILED)
+    assert outcome == Refusal(Reason.GATE_FAILED)
 
 
 def test_a_later_read_that_would_disclose_the_pair_is_refused() -> None:
@@ -109,7 +109,7 @@ def test_unequal_sources_on_a_contested_pair_stay_a_source_fault() -> None:
     account = _contested_account(world)
     command = contest(account, LATER, FRESH, A, ("letter", "operator"))
 
-    assert world.decide(command) == Refusal(5, Reason.UNEQUAL_AUTHORITY)
+    assert world.decide(command) == Refusal(Reason.UNEQUAL_AUTHORITY)
 
 
 def test_equal_values_on_a_contested_pair_stay_a_value_fault() -> None:
@@ -118,7 +118,7 @@ def test_equal_values_on_a_contested_pair_stay_a_value_fault() -> None:
 
     outcome = world.decide(contest(account, LATER, FRESH, FRESH))
 
-    assert outcome == Refusal(5, Reason.CONTESTED_VALUES_EQUAL)
+    assert outcome == Refusal(Reason.CONTESTED_VALUES_EQUAL)
 
 
 def test_a_later_agreeing_double_disclosure_on_the_pair_is_refused() -> None:

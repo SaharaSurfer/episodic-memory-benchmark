@@ -26,7 +26,7 @@ from tests.testpack.values import (
     ReferenceNumber,
 )
 
-SAME_ZONE = Refusal(clause=7, reason=Reason.ANCHOR_SAME_ZONE)
+SAME_ZONE = Refusal(Reason.ANCHOR_SAME_ZONE)
 
 # Every zoned class in the test pack is in the same zone only when equal, so
 # these tests cannot tell a zone comparison from an equality one. Telling them
@@ -107,7 +107,7 @@ def test_an_anchor_clash_that_is_also_invalid_is_refused_as_invalid() -> None:
 
     outcome = world.decide(open_account(2, productName=DepositKind("savings")))
 
-    assert outcome == Refusal(clause=3, reason=Reason.INVALID_VALUE)
+    assert outcome == Refusal(Reason.INVALID_VALUE)
 
 
 def _anchored_on_product_name() -> World:

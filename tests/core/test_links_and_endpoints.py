@@ -51,7 +51,7 @@ from tests.testpack.values import (
     MonetaryAmount,
 )
 
-FILTER_FAILED = Refusal(clause=1, reason=Reason.ENDPOINT_FILTER_FAILED)
+FILTER_FAILED = Refusal(Reason.ENDPOINT_FILTER_FAILED)
 
 
 def filtered(account: NodeId, session: int, name: str) -> InitCommand:
@@ -167,7 +167,7 @@ def test_an_endpoint_that_does_not_exist_is_refused() -> None:
 
     outcome = world.decide(issue(MISSING, ISSUED_IN))
 
-    assert outcome == Refusal(clause=1, reason=Reason.ENDPOINT_MISSING)
+    assert outcome == Refusal(Reason.ENDPOINT_MISSING)
 
 
 def test_an_endpoint_of_a_type_the_link_does_not_point_at_is_refused() -> None:
@@ -176,7 +176,7 @@ def test_an_endpoint_of_a_type_the_link_does_not_point_at_is_refused() -> None:
 
     outcome = world.decide(issue(card, 3))
 
-    assert outcome == Refusal(clause=1, reason=Reason.ENDPOINT_WRONG_TYPE)
+    assert outcome == Refusal(Reason.ENDPOINT_WRONG_TYPE)
 
 
 def test_an_endpoint_failing_its_gate_is_refused() -> None:
@@ -188,7 +188,7 @@ def test_an_endpoint_failing_its_gate_is_refused() -> None:
     outcome = world.decide(issue(account, 3))
 
     assert not isinstance(passing, Refusal)
-    assert outcome == Refusal(clause=1, reason=Reason.ENDPOINT_GATE_FAILED)
+    assert outcome == Refusal(Reason.ENDPOINT_GATE_FAILED)
 
 
 def test_a_gate_on_a_relation_the_endpoint_lacks_refuses_it() -> None:
@@ -199,7 +199,7 @@ def test_a_gate_on_a_relation_the_endpoint_lacks_refuses_it() -> None:
 
     outcome = world.decide(issue(account, ISSUED_IN))
 
-    assert outcome == Refusal(clause=1, reason=Reason.ENDPOINT_GATE_FAILED)
+    assert outcome == Refusal(Reason.ENDPOINT_GATE_FAILED)
 
 
 def test_an_endpoint_failing_its_named_filter_is_refused() -> None:
@@ -389,7 +389,7 @@ def test_the_endpoint_clause_comes_before_the_value_clause() -> None:
 
     outcome = world.decide(replace(issue(MISSING, ISSUED_IN), writes=invalid))
 
-    assert outcome == Refusal(clause=1, reason=Reason.ENDPOINT_MISSING)
+    assert outcome == Refusal(Reason.ENDPOINT_MISSING)
 
 
 @pytest.mark.parametrize(
@@ -446,7 +446,7 @@ def test_a_link_disclosure_is_true_only_of_the_linked_target() -> None:
         )
         return refuse_untrue_disclosure(disclosure, registry)
 
-    untrue = Refusal(clause=4, reason=Reason.UNTRUE_DISCLOSURE)
+    untrue = Refusal(Reason.UNTRUE_DISCLOSURE)
     assert stating(card, account) is None
     assert stating(card, other) == untrue
     assert stating(account, other) == untrue

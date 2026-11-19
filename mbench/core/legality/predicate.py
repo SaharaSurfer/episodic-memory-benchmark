@@ -75,9 +75,8 @@ class Reason(Enum):
 
 @dataclass(frozen=True)
 class Refusal:
-    """A refused command: the first clause it fails, and why."""
+    """Why a command was refused: the reason its first failing clause gives."""
 
-    clause: int
     reason: Reason
 
 
@@ -174,25 +173,25 @@ def refuse_unfit_referent(
 
     entry = registry.entry(command.referent)
     if entry is None:
-        return Refusal(1, Reason.REFERENT_MISSING)
+        return Refusal(Reason.REFERENT_MISSING)
 
     # It names no ActionType, so it has no referent type or gate of its own.
     if isinstance(command, ConflictingDoubleDisclosureCommand):
-        return None if is_live(entry, pack) else Refusal(1, Reason.NOT_LIVE)
+        return None if is_live(entry, pack) else Refusal(Reason.NOT_LIVE)
 
     action = pack.action_types[command.action_type]
     if entry.type != action.referent_type:
-        return Refusal(1, Reason.REFERENT_WRONG_TYPE)
+        return Refusal(Reason.REFERENT_WRONG_TYPE)
 
     gate = action.gate if isinstance(action, MutateAction) else {}
     if not _passes(entry, gate):
-        return Refusal(1, Reason.GATE_FAILED)
+        return Refusal(Reason.GATE_FAILED)
 
     # A gate that reads the status has named the statuses it admits, a
     # terminal one included, so it, not liveness, decides.
     status = pack.entity_types[entry.type].status
     if status not in gate and not is_live(entry, pack):
-        return Refusal(1, Reason.NOT_LIVE)
+        return Refusal(Reason.NOT_LIVE)
 
     return None
 
@@ -214,15 +213,15 @@ def refuse_unfit_endpoints(
         entry = registry.entry(endpoint)
 
         if entry is None:
-            return Refusal(1, Reason.ENDPOINT_MISSING)
+            return Refusal(Reason.ENDPOINT_MISSING)
         if entry.type not in targets[link]:
-            return Refusal(1, Reason.ENDPOINT_WRONG_TYPE)
+            return Refusal(Reason.ENDPOINT_WRONG_TYPE)
         if not _passes(entry, action.links[link]):
-            return Refusal(1, Reason.ENDPOINT_GATE_FAILED)
+            return Refusal(Reason.ENDPOINT_GATE_FAILED)
         if _filter_verdict(command, link, entry, registry, pack) is (
             Verdict.FAIL
         ):
-            return Refusal(1, Reason.ENDPOINT_FILTER_FAILED)
+            return Refusal(Reason.ENDPOINT_FILTER_FAILED)
 
     return None
 
@@ -233,7 +232,7 @@ def refuse_missing_entity(
     """Refuse a READ of an entity the world does not hold."""
 
     if registry.entry(command.entity) is None:
-        return Refusal(1, Reason.REFERENT_MISSING)
+        return Refusal(Reason.REFERENT_MISSING)
 
     return None
 
@@ -245,7 +244,7 @@ def refuse_second_write(
 
     for current in _current(command, writes, registry).values():
         if current.session == command.session:
-            return Refusal(2, Reason.PAIR_ALREADY_WRITTEN)
+            return Refusal(Reason.PAIR_ALREADY_WRITTEN)
 
     return None
 
@@ -260,7 +259,7 @@ def refuse_invalid_values(
 
     for relation, value in _stated_values(command, pack):
         if not _fits(relations, relation, value):
-            return Refusal(3, Reason.INVALID_VALUE)
+            return Refusal(Reason.INVALID_VALUE)
 
     return None
 
@@ -300,13 +299,13 @@ def _refuse_contest_values(
     """Refuse two equal values, or one the pair already holds."""
 
     if command.a == command.b:
-        return Refusal(5, Reason.CONTESTED_VALUES_EQUAL)
+        return Refusal(Reason.CONTESTED_VALUES_EQUAL)
 
     # Only the current value: the registry keeps no earlier versions, so
     # whoever draws the two values must avoid those.
     current = entry.values.get(command.relation)
     if current is not None and current.value in (command.a, command.b):
-        return Refusal(5, Reason.CONTESTED_VALUE_IS_CURRENT)
+        return Refusal(Reason.CONTESTED_VALUE_IS_CURRENT)
 
     return None
 
@@ -327,17 +326,17 @@ def _refuse_contest_writers(
     for value in (command.a, command.b):
         writer = _find_writer(entry, command.relation, value, pack)
         if writer is None:
-            return Refusal(5, Reason.NO_WRITER)
+            return Refusal(Reason.NO_WRITER)
         if not _passes(entry, writer.gate):
-            return Refusal(5, Reason.WRITER_GATE_FAILED)
+            return Refusal(Reason.WRITER_GATE_FAILED)
         if not pack.passes_owner_rule(writer.name):
-            return Refusal(5, Reason.NO_CONTESTABLE_FRAMING)
+            return Refusal(Reason.NO_CONTESTABLE_FRAMING)
         writers.append(writer.name)
 
     # The command names the initiator, since two framings may share several.
     first, second = writers
     if command.initiator not in pack.shared_initiators(first, second):
-        return Refusal(5, Reason.INITIATOR_NOT_SHARED)
+        return Refusal(Reason.INITIATOR_NOT_SHARED)
 
     return None
 
@@ -350,12 +349,12 @@ def _refuse_contest_sources(
     first, second = (pack.sources[source] for source in command.sources)
 
     if first.authority != second.authority:
-        return Refusal(5, Reason.UNEQUAL_AUTHORITY)
+        return Refusal(Reason.UNEQUAL_AUTHORITY)
 
     # Two letters are two messages, one person giving two figures is a
     # self-correction.
     if first.id == second.id and first.kind is SourceKind.SPEAKER:
-        return Refusal(5, Reason.SPEAKER_TWICE)
+        return Refusal(Reason.SPEAKER_TWICE)
 
     return None
 
@@ -381,7 +380,7 @@ def refuse_sealed_entity(
         assert entry is not None
         sealed = _entity_is_sealed(entry, pack)
 
-    return Refusal(6, Reason.ENTITY_SEALED) if sealed else None
+    return Refusal(Reason.ENTITY_SEALED) if sealed else None
 
 
 def _init_relies_on_conflict(
@@ -447,7 +446,7 @@ def _refuse_sealed(values: Iterable[Stamped]) -> Refusal | None:
     """Refuse a command touching these values if any is contested."""
 
     if any(isinstance(current.value, Contested) for current in values):
-        return Refusal(6, Reason.PAIR_SEALED)
+        return Refusal(Reason.PAIR_SEALED)
 
     return None
 
@@ -472,7 +471,7 @@ def refuse_anchor_same_zone(
         if entry.type == entity_type.name and all(
             _same_part(writes, entry, part) for part in entity_type.anchor
         ):
-            return Refusal(7, Reason.ANCHOR_SAME_ZONE)
+            return Refusal(Reason.ANCHOR_SAME_ZONE)
 
     return None
 
@@ -484,7 +483,7 @@ def refuse_unchanged_value(
 
     for relation, current in _current(command, writes, registry).items():
         if writes[relation] == current.value:
-            return Refusal(8, Reason.UNCHANGED_VALUE)
+            return Refusal(Reason.UNCHANGED_VALUE)
 
     return None
 
@@ -496,7 +495,7 @@ def refuse_untrue_disclosure(
 
     entry = registry.entry(disclosure.entity)
     if entry is None:
-        return Refusal(4, Reason.UNTRUE_DISCLOSURE)
+        return Refusal(Reason.UNTRUE_DISCLOSURE)
 
     if isinstance(disclosure.value, Link):
         holds = entry.links.get(disclosure.relation) == disclosure.value.target
@@ -504,7 +503,7 @@ def refuse_untrue_disclosure(
         current = entry.values.get(disclosure.relation)
         holds = current is not None and admits(current.value, disclosure.value)
 
-    return None if holds else Refusal(4, Reason.UNTRUE_DISCLOSURE)
+    return None if holds else Refusal(Reason.UNTRUE_DISCLOSURE)
 
 
 def _same_part(

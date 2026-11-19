@@ -161,7 +161,7 @@ def test_a_refusal_is_returned_and_adds_nothing_to_the_run() -> None:
 
     outcome = run.decide(_step_on_missing_account())
 
-    assert outcome == Refusal(1, Reason.REFERENT_MISSING)
+    assert outcome == Refusal(Reason.REFERENT_MISSING)
     assert run.accepted == ()
 
 

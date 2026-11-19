@@ -156,7 +156,7 @@ def test_a_value_the_relation_does_not_hold_is_refused_not_raised(
 ) -> None:
     outcome = World().decide(open_account(OPENED_IN, **changes))
 
-    assert outcome == Refusal(clause=3, reason=Reason.INVALID_VALUE)
+    assert outcome == Refusal(Reason.INVALID_VALUE)
 
 
 def test_a_refused_command_allocates_no_id() -> None:

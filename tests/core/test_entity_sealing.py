@@ -61,9 +61,9 @@ CONTESTED_IN = 7
 LATER = CONTESTED_IN + 2
 FRESH_RATE = "3.90"
 OPENING_FEE = "5"
-ENTITY_SEALED = Refusal(6, Reason.ENTITY_SEALED)
-PAIR_SEALED = Refusal(6, Reason.PAIR_SEALED)
-FILTER_FAILED = Refusal(1, Reason.ENDPOINT_FILTER_FAILED)
+ENTITY_SEALED = Refusal(Reason.ENTITY_SEALED)
+PAIR_SEALED = Refusal(Reason.PAIR_SEALED)
+FILTER_FAILED = Refusal(Reason.ENDPOINT_FILTER_FAILED)
 ACTIVE_ONLY: Gate = {STATUS: frozenset({ACTIVE})}
 
 # Both card moves stated by a bank letter, so a card's status can be contested.
@@ -131,7 +131,7 @@ def test_a_case_status_is_not_contested_if_the_owner_states_a_move() -> None:
         status_contest(case, CONTESTED_IN, UNDER_REVIEW, CLOSED)
     )
 
-    assert outcome == Refusal(5, Reason.NO_CONTESTABLE_FRAMING)
+    assert outcome == Refusal(Reason.NO_CONTESTABLE_FRAMING)
 
 
 @pytest.mark.parametrize(

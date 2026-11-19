@@ -43,8 +43,8 @@ DEBIT = CardType("debit")
 CREDIT = CardType("credit")
 CONTESTED_IN = 7
 LATER = CONTESTED_IN + 2
-ENTITY_SEALED = Refusal(6, Reason.ENTITY_SEALED)
-SAME_ZONE = Refusal(7, Reason.ANCHOR_SAME_ZONE)
+ENTITY_SEALED = Refusal(Reason.ENTITY_SEALED)
+SAME_ZONE = Refusal(Reason.ANCHOR_SAME_ZONE)
 
 
 def _init_action(pack: LoadedPack, name: str) -> InitAction:
@@ -271,7 +271,7 @@ def test_a_replacement_counts_as_a_live_card_on_the_account() -> None:
 
     world.replace_card(card)
 
-    assert world.decide(command) == Refusal(1, Reason.ENDPOINT_FILTER_FAILED)
+    assert world.decide(command) == Refusal(Reason.ENDPOINT_FILTER_FAILED)
 
 
 def test_a_closed_card_can_be_replaced() -> None:
@@ -400,4 +400,4 @@ def test_the_factory_fills_a_replacement_of_a_missing_card() -> None:
     )
 
     assert isinstance(filled, InitCommand)
-    assert world.decide(filled) == Refusal(1, Reason.ENDPOINT_MISSING)
+    assert world.decide(filled) == Refusal(Reason.ENDPOINT_MISSING)

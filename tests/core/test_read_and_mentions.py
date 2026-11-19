@@ -188,7 +188,7 @@ def test_a_read_of_an_entity_that_does_not_exist_is_refused() -> None:
 
     outcome = world.decide(read(MISSING, 3))
 
-    assert outcome == Refusal(1, Reason.REFERENT_MISSING)
+    assert outcome == Refusal(Reason.REFERENT_MISSING)
 
 
 def _stating(entity: NodeId, rate: str) -> Disclosure:
@@ -218,7 +218,7 @@ def test_a_disclosure_of_a_value_not_current_is_refused(rate: str) -> None:
     disclosure = _stating(account, rate)
 
     assert refuse_untrue_disclosure(disclosure, registry) == Refusal(
-        4, Reason.UNTRUE_DISCLOSURE
+        Reason.UNTRUE_DISCLOSURE
     )
 
 
@@ -242,5 +242,5 @@ def test_a_disclosure_about_a_pair_the_world_lacks_is_refused(
     disclosure = missing(account)
 
     assert refuse_untrue_disclosure(disclosure, registry) == Refusal(
-        4, Reason.UNTRUE_DISCLOSURE
+        Reason.UNTRUE_DISCLOSURE
     )

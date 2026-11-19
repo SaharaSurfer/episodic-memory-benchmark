@@ -14,7 +14,7 @@ from tests.valuegate.pack import (
     WickLength,
 )
 
-GATE_FAILED = Refusal(clause=1, reason=Reason.GATE_FAILED)
+GATE_FAILED = Refusal(Reason.GATE_FAILED)
 
 
 def _light_lantern(world: World, wick: WickLength) -> NodeId:

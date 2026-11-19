@@ -132,7 +132,7 @@ def test_a_move_from_outside_its_source_statuses_fails_the_gate(
 
     outcome = world.decide(move(account, 3, action_type))
 
-    assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
+    assert outcome == Refusal(Reason.GATE_FAILED)
 
 
 def test_a_closed_entity_stays_in_the_registry() -> None:
@@ -173,7 +173,7 @@ def test_every_mutate_on_a_closed_entity_is_refused(
 
     outcome = world.decide(command(account))
 
-    assert outcome == Refusal(clause=1, reason=reason)
+    assert outcome == Refusal(reason)
 
 
 def test_a_gate_admitting_a_terminal_status_lets_a_closed_entity_act() -> None:
@@ -204,7 +204,7 @@ def test_a_gate_admitting_a_terminal_status_lets_a_closed_entity_act() -> None:
 
     outcome = world.decide(waive(3))
 
-    assert refused_while_open == Refusal(clause=1, reason=Reason.GATE_FAILED)
+    assert refused_while_open == Refusal(Reason.GATE_FAILED)
     assert not isinstance(outcome, Refusal)
 
 
@@ -226,7 +226,7 @@ def test_terminal_statuses_are_read_from_the_pack() -> None:
     changed_outcome = reprice_when_frozen(World(pack))
 
     assert not isinstance(usual_outcome, Refusal)
-    assert changed_outcome == Refusal(clause=1, reason=Reason.NOT_LIVE)
+    assert changed_outcome == Refusal(Reason.NOT_LIVE)
 
 
 def test_a_command_whose_referent_does_not_exist_is_refused() -> None:
@@ -235,7 +235,7 @@ def test_a_command_whose_referent_does_not_exist_is_refused() -> None:
 
     outcome = world.decide(reprice(MISSING, 2, "3.90"))
 
-    assert outcome == Refusal(clause=1, reason=Reason.REFERENT_MISSING)
+    assert outcome == Refusal(Reason.REFERENT_MISSING)
 
 
 def test_a_command_whose_referent_has_another_type_is_refused() -> None:
@@ -244,7 +244,7 @@ def test_a_command_whose_referent_has_another_type_is_refused() -> None:
 
     outcome = world.decide(reprice(counter, 2, "3.90"))
 
-    assert outcome == Refusal(clause=1, reason=Reason.REFERENT_WRONG_TYPE)
+    assert outcome == Refusal(Reason.REFERENT_WRONG_TYPE)
 
 
 def test_an_entity_of_a_type_with_no_status_is_live() -> None:
@@ -270,10 +270,10 @@ def test_the_referent_clause_comes_before_the_write_clauses() -> None:
     account = world.open()
     world.accept(move(account, 2, "CLOSE_DEPOSIT_ACCOUNT"))
 
-    # Also a second write of the pair in its session (clause 2).
+    # Also a second write of the pair in its session.
     outcome = world.decide(move(account, 2, "FREEZE_DEPOSIT_ACCOUNT"))
 
-    assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
+    assert outcome == Refusal(Reason.GATE_FAILED)
 
 
 @pytest.mark.parametrize(
@@ -287,7 +287,7 @@ def test_an_inactive_card_cannot_be_locked_or_unlocked(
 
     outcome = world.decide(move(card, 3, action_type))
 
-    assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
+    assert outcome == Refusal(Reason.GATE_FAILED)
 
 
 def test_a_case_moves_through_review_appeal_and_closing() -> None:
@@ -316,7 +316,7 @@ def test_a_case_is_decided_only_under_review(action: str) -> None:
 
     outcome = world.decide(move(case, REPORTED_IN + 1, action))
 
-    assert outcome == Refusal(clause=1, reason=Reason.GATE_FAILED)
+    assert outcome == Refusal(Reason.GATE_FAILED)
 
 
 def test_a_card_returning_to_active_has_a_status_node_per_write() -> None:

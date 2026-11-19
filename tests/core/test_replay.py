@@ -39,7 +39,7 @@ from tests.testpack.values import (
 
 FREEZE = "FREEZE_DEPOSIT_ACCOUNT"
 RATE = "hasInterestRate"
-UNTRUE = Refusal(4, Reason.UNTRUE_DISCLOSURE)
+UNTRUE = Refusal(Reason.UNTRUE_DISCLOSURE)
 UNHELD_FEE = MonetaryAmount(Decimal("99"))
 UNHELD_RATE = InterestRate(Decimal("9.99"))
 
@@ -70,7 +70,7 @@ def test_an_empty_log_replays_clean() -> None:
             LOADED_PACK,
             lambda account: move(account, 2, FREEZE),
             lambda account: move(account, 3, FREEZE),
-            Refusal(1, Reason.GATE_FAILED),
+            Refusal(Reason.GATE_FAILED),
         ),
         (
             LOADED_PACK,
@@ -78,31 +78,31 @@ def test_an_empty_log_replays_clean() -> None:
             lambda account: replace(
                 issue(account, 3), filters={CARD_LINK: NO_LIVE_CARD}
             ),
-            Refusal(1, Reason.ENDPOINT_FILTER_FAILED),
+            Refusal(Reason.ENDPOINT_FILTER_FAILED),
         ),
         (
             LOADED_PACK,
             lambda account: change_fee(account, 2, "1"),
             lambda account: change_fee(account, 2, "0"),
-            Refusal(2, Reason.PAIR_ALREADY_WRITTEN),
+            Refusal(Reason.PAIR_ALREADY_WRITTEN),
         ),
         (
             LOADED_PACK,
             lambda account: contest(account, 2, "3.90", "3.80"),
             lambda account: reprice(account, 3, "3.70"),
-            Refusal(6, Reason.PAIR_SEALED),
+            Refusal(Reason.PAIR_SEALED),
         ),
         (
             BANK_MAY_CLOSE,
             lambda account: status_contest(account, 2, FROZEN, CLOSED),
             lambda account: change_fee(account, 3, "0"),
-            Refusal(6, Reason.ENTITY_SEALED),
+            Refusal(Reason.ENTITY_SEALED),
         ),
         (
             LOADED_PACK,
             lambda account: reprice(account, 2, "3.90"),
             lambda account: reprice(account, 3, "3.90"),
-            Refusal(8, Reason.UNCHANGED_VALUE),
+            Refusal(Reason.UNCHANGED_VALUE),
         ),
         (
             LOADED_PACK,

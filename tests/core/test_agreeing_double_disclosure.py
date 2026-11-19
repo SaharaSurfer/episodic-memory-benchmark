@@ -123,25 +123,30 @@ def test_the_second_disclosure_adds_nothing_to_the_graph() -> None:
     [
         (
             lambda _: agree(MISSING, 2, FRESH_RATE),
-            Refusal(1, Reason.REFERENT_MISSING),
+            Refusal(Reason.REFERENT_MISSING),
         ),
         (
             lambda account: agree(account, OPENED_IN, FRESH_RATE),
-            Refusal(2, Reason.PAIR_ALREADY_WRITTEN),
+            Refusal(Reason.PAIR_ALREADY_WRITTEN),
         ),
         (
             lambda account: replace(
                 agree(account, 2, FRESH_RATE),
                 value=MonetaryAmount(Decimal("1")),
             ),
-            Refusal(3, Reason.INVALID_VALUE),
+            Refusal(Reason.INVALID_VALUE),
         ),
         (
             lambda account: agree(account, 3, OPENING_RATE),
-            Refusal(8, Reason.UNCHANGED_VALUE),
+            Refusal(Reason.UNCHANGED_VALUE),
         ),
     ],
-    ids=["clause 1", "clause 2", "clause 3", "clause 8"],
+    ids=[
+        "referent_missing",
+        "pair_already_written",
+        "invalid_value",
+        "unchanged_value",
+    ],
 )
 def test_an_agreeing_double_is_refused_like_any_other_write(
     command: Callable[[NodeId], AgreeingDoubleDisclosureCommand],
