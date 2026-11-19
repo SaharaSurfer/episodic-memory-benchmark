@@ -1,8 +1,15 @@
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
-from mbench.core.folds.registry import Entry, Registry, Stamped, is_live
+from mbench.core.folds.registry import (
+    Entry,
+    Registry,
+    Stamped,
+    is_contested,
+    is_live,
+)
+from mbench.core.legality.role_filters import Verdict, judge, judge_gate
 from mbench.core.records.commands import (
     AgreeingDoubleDisclosureCommand,
     Command,
@@ -31,11 +38,10 @@ from mbench.packs.spec import (
     Copy,
     Gate,
     InitAction,
-    Linker,
     LoadedPack,
     MutateAction,
-    RoleFilter,
     SourceKind,
+    default_source,
 )
 
 
@@ -142,35 +148,18 @@ def _build_records(
             command, _plain_writes(command, pack), command.sources, allocator
         )
 
-    source = default_source(command, pack)
+    source = default_source(
+        command.initiator,
+        command.source,
+        pack.speakers.values(),
+        pack.sources.values(),
+    )
     if isinstance(command, InitCommand):
         return _init_records(command, source, registry, pack, allocator)
 
     return _mutate_records(
         command, _plain_writes(command, pack), (source,), allocator
     )
-
-
-def default_source(
-    command: InitCommand | MutateCommand, pack: LoadedPack
-) -> str:
-    """The source named, else the initiator's speaker, else a document."""
-
-    if command.source is not None:
-        return command.source
-
-    for speaker in pack.speakers.values():
-        if speaker.represents == command.initiator:
-            return speaker.id
-
-    # Any document will do, the first declared keeps a replay stable.
-    for source in pack.sources.values():
-        if source.kind is SourceKind.DOCUMENT:
-            return source.id
-
-    # An off-stage actor in a pack with no document is the pack's bug, not a
-    # refusal a clause would count.
-    raise LookupError(f"no source can state an event of {command.initiator}")
 
 
 def refuse_unfit_referent(
@@ -229,9 +218,8 @@ def refuse_unfit_endpoints(
             return Refusal(1, Reason.ENDPOINT_WRONG_TYPE)
         if not _passes(entry, action.links[link]):
             return Refusal(1, Reason.ENDPOINT_GATE_FAILED)
-        filter_name = command.filters.get(link)
-        if filter_name is not None and not _passes_filter(
-            entry, pack.role_filters[filter_name], registry, pack
+        if _filter_verdict(command, link, entry, registry, pack) is (
+            Verdict.FAIL
         ):
             return Refusal(1, Reason.ENDPOINT_FILTER_FAILED)
 
@@ -331,7 +319,7 @@ def _refuse_contest_writers(
 
     # Nothing can write from a conflict, but that is not why a pair already
     # contested stays closed: sealing gives that refusal.
-    if _is_contested(entry, command.relation):
+    if is_contested(entry, command.relation):
         return None
 
     writers = []
@@ -398,7 +386,7 @@ def refuse_sealed_entity(
 def _init_relies_on_conflict(
     command: InitCommand, registry: Registry, pack: LoadedPack
 ) -> bool:
-    """Whether a link's target is sealed, or a filter reads a conflict."""
+    """Whether a link's target is sealed, or its filter is undecided on it."""
 
     for link, endpoint in command.links.items():
         entry = registry.entry(endpoint)
@@ -408,11 +396,10 @@ def _init_relies_on_conflict(
         if _entity_is_sealed(entry, pack):
             return True
 
-        filter_name = command.filters.get(link)
-        if filter_name is not None and any(
-            _status_is_contested(other, pack)
-            for linker in pack.role_filters[filter_name].no_live_linkers
-            for other in _linkers(entry, linker, registry)
+        # Such as a linking entity's contested status, which no relation of
+        # the endpoint holds, so sealing it would not catch.
+        if _filter_verdict(command, link, entry, registry, pack) is (
+            Verdict.UNDECIDED
         ):
             return True
 
@@ -435,19 +422,11 @@ def _linked_entry(target: NodeId, registry: Registry) -> Entry:
 def _entity_is_sealed(entry: Entry, pack: LoadedPack) -> bool:
     """Whether a relation legality reads holds a contested value."""
 
-    contested = {r for r in entry.values if _is_contested(entry, r)}
+    contested = {r for r in entry.values if is_contested(entry, r)}
     if not contested:
         return False
 
     return not contested.isdisjoint(pack.relations_legality_reads(entry.type))
-
-
-def _status_is_contested(entry: Entry, pack: LoadedPack) -> bool:
-    """Whether the entity's status holds a contested value."""
-
-    status = pack.entity_types[entry.type].status
-
-    return status is not None and _is_contested(entry, status)
 
 
 def refuse_sealed_read(
@@ -470,14 +449,6 @@ def _refuse_sealed(values: Iterable[Stamped]) -> Refusal | None:
         return Refusal(6, Reason.PAIR_SEALED)
 
     return None
-
-
-def _is_contested(entry: Entry, relation: str) -> bool:
-    """Whether the entity's pair for the relation holds a contested value."""
-
-    current = entry.values.get(relation)
-
-    return current is not None and isinstance(current.value, Contested)
 
 
 def refuse_anchor_same_zone(
@@ -733,6 +704,17 @@ def _check_links(command: EventCommand, pack: LoadedPack) -> None:
             f" {sorted(unknown)}"
         )
 
+    # A command stores no bindings, so replay could not judge one of these.
+    relating = sorted(
+        name
+        for name in set(command.filters.values())
+        if pack.role_filters[name].of is not None
+    )
+    if relating:
+        raise ValueError(
+            f"{action.name} names role filters relating two roles: {relating}"
+        )
+
 
 def _check_fixed_values(command: EventCommand, pack: LoadedPack) -> None:
     """Raise unless an INIT writes exactly the values its ActionType fixes."""
@@ -858,62 +840,27 @@ def _written_value(
 
 
 def _passes(entry: Entry, gate: Gate) -> bool:
-    """Whether every relation gated is held, admitted or contested."""
+    """Whether the entity holds every relation gated, admitted or contested."""
 
     # A gate cannot judge a conflict. The pack lists what gates read, so
     # sealing refuses the command instead.
-    return all(
-        relation in entry.values
-        and (
-            _is_contested(entry, relation)
-            or entry.values[relation].value in admitted
-        )
-        for relation, admitted in gate.items()
-    )
+    return judge_gate(entry, gate) is not Verdict.FAIL
 
 
-def _passes_filter(
+def _filter_verdict(
+    command: InitCommand,
+    link: str,
     entry: Entry,
-    role_filter: RoleFilter,
     registry: Registry,
     pack: LoadedPack,
-) -> bool:
-    """Whether the entity is one the role filter lets a role bind."""
+) -> Verdict:
+    """The verdict of the filter named for the link on its endpoint, if any."""
 
-    return (
-        entry.type == role_filter.entity_type
-        and _passes(entry, role_filter.values)
-        and (not role_filter.live or is_live(entry, pack))
-        and not any(
-            _has_live_linker(entry, linker, registry, pack)
-            for linker in role_filter.no_live_linkers
-        )
-    )
+    name = command.filters.get(link)
+    if name is None:
+        return Verdict.PASS
 
-
-def _has_live_linker(
-    entry: Entry, linker: Linker, registry: Registry, pack: LoadedPack
-) -> bool:
-    """Whether an entity surely live points at the entry that way."""
-
-    # Whether a contested status is live has no answer, sealing refuses it.
-    return any(
-        is_live(other, pack) and not _status_is_contested(other, pack)
-        for other in _linkers(entry, linker, registry)
-    )
-
-
-def _linkers(
-    entry: Entry, linker: Linker, registry: Registry
-) -> Iterator[Entry]:
-    """The entities pointing at the entry in the linker's way."""
-
-    return (
-        other
-        for other in registry.entries()
-        if other.type == linker.entity_type
-        and other.links.get(linker.link) == entry.id
-    )
+    return judge(pack.role_filters[name], entry, registry, pack)
 
 
 def _init_records(

@@ -8,7 +8,7 @@ from tests.testpack.pack import (
     LOADED_PACK,
     PAYMENT_CARD,
 )
-from tests.testpack.values import CardType
+from tests.testpack.values import CardType, DepositKind
 
 
 def test_a_value_filter_reads_the_relation_it_requires() -> None:
@@ -53,3 +53,19 @@ def test_liveness_reads_nothing_on_a_type_without_a_status() -> None:
     )
 
     assert pack.relations_read("OPEN") == {"BRANCH": frozenset()}
+
+
+def test_an_any_type_filter_reads_each_type_holding_its_relations() -> None:
+    any_checking = RoleFilter(
+        "ANY_CHECKING",
+        None,
+        values={"kind": frozenset({DepositKind("checking")})},
+        live=True,
+    )
+    pack = replace(LOADED_PACK, role_filters={any_checking.name: any_checking})
+
+    assert pack.relations_read(any_checking.name) == {
+        "DEPOSIT_ACCOUNT": {"kind", "hasStatus"},
+        "PAYMENT_CARD": {"hasStatus"},
+        "SERVICE_CASE": {"kind", "hasStatus"},
+    }

@@ -9,7 +9,7 @@ from mbench.core.records.log import (
     MutateEvent,
     Record,
 )
-from mbench.core.values.contested import WorldValue
+from mbench.core.values.contested import Contested, WorldValue
 from mbench.packs.spec import LoadedPack
 
 
@@ -68,6 +68,14 @@ def is_live(entry: Entry, pack: LoadedPack) -> bool:
         return True
 
     return entry.values[entity_type.status].value not in entity_type.terminal
+
+
+def is_contested(entry: Entry, relation: str) -> bool:
+    """Whether the entity's pair for the relation holds a contested value."""
+
+    current = entry.values.get(relation)
+
+    return current is not None and isinstance(current.value, Contested)
 
 
 def evolve_world(

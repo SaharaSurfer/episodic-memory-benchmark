@@ -13,6 +13,7 @@ from mbench.packs.spec import (
     Source,
     SourceKind,
     Speaker,
+    default_source,
 )
 from tests.testpack.pools import POOLS
 from tests.testpack.samplers import INIT_SAMPLERS, STEP_SAMPLERS
@@ -170,16 +171,25 @@ ROLE_FILTERS = (
     ),
 )
 
-_CLIENT_STATES = Framing(CLIENT.name, "customer")
-_BANK_STATES = Framing(BANK.name, "operator")
-_BANK_WRITES = Framing(BANK.name, "letter")
+
+def _framing(initiator: str, named: str | None = None) -> Framing:
+    """How a step occurs: its initiator, and the source that states it."""
+
+    return Framing(
+        initiator, default_source(initiator, named, SPEAKERS, SOURCES)
+    )
+
+
+_CLIENT_STATES = _framing(CLIENT.name)
+_BANK_STATES = _framing(BANK.name)
+_BANK_WRITES = _framing(BANK.name, "letter")
 
 # Every way each ActionType occurs in the pack's errands. One that names no
-# document is stated by its initiator's speaker.
+# source is stated by its initiator's speaker.
 FRAMINGS = {
     "OPEN_DEPOSIT_ACCOUNT": (_CLIENT_STATES,),
     # The bank issues on its own, or the client asks and the operator says so.
-    "ISSUE_CARD": (_BANK_STATES, Framing(CLIENT.name, "operator")),
+    "ISSUE_CARD": (_BANK_STATES, _framing(CLIENT.name, "operator")),
     "ISSUE_REPLACEMENT_CARD": (_BANK_STATES,),
     "REPRICE_DEPOSIT_ACCOUNT": (_BANK_WRITES,),
     "CHANGE_ACCOUNT_FEE": (_BANK_WRITES,),
@@ -192,8 +202,8 @@ FRAMINGS = {
     "UNLOCK_CARD": (_CLIENT_STATES,),
     "CLOSE_CARD": (_CLIENT_STATES,),
     # The client asks, and the operator opens the case and says so.
-    "REPORT_FRAUD": (Framing(CLIENT.name, "operator"),),
-    "REQUEST_CARD": (Framing(CLIENT.name, "operator"),),
+    "REPORT_FRAUD": (_framing(CLIENT.name, "operator"),),
+    "REQUEST_CARD": (_framing(CLIENT.name, "operator"),),
     # The bank works a case, and the client can appeal a denied one.
     "REVIEW_CASE": (_BANK_STATES, _CLIENT_STATES),
     "APPROVE_CASE": (_BANK_STATES,),

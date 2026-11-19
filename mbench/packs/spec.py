@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -229,6 +229,31 @@ class Source:
     authority: int
 
 
+def default_source(
+    initiator: str,
+    named: str | None,
+    speakers: Iterable[Speaker],
+    sources: Iterable[Source],
+) -> str:
+    """The source named, else the initiator's speaker, else a document."""
+
+    if named is not None:
+        return named
+
+    for speaker in speakers:
+        if speaker.represents == initiator:
+            return speaker.id
+
+    # Any document will do, the first declared keeps a replay stable.
+    for source in sources:
+        if source.kind is SourceKind.DOCUMENT:
+            return source.id
+
+    # An off-stage actor in a pack with no document is the pack's bug, not a
+    # refusal a clause would count.
+    raise LookupError(f"no source can state an event of {initiator}")
+
+
 @dataclass(frozen=True)
 class Framing:
     """One way an ActionType occurs: who starts it and who states it."""
@@ -250,13 +275,16 @@ class RoleFilter:
     """A named condition on which entity of a type a role may bind."""
 
     name: str
-    entity_type: str
+    # None admits an entity of any type.
+    entity_type: str | None
     # The values the entity must hold, per relation.
     values: Gate = field(default_factory=lambda: MappingProxyType({}))
     # Whether the entity's current status must be non-terminal.
     live: bool = False
     # The entity must have no live entity pointing at it in any of these ways.
     no_live_linkers: tuple[Linker, ...] = ()
+    # A role the entity must link to the binding of, by any of its links.
+    of: str | None = None
 
     def __post_init__(self) -> None:
         """Hold the required values read-only."""
@@ -414,12 +442,22 @@ class LoadedPack:
         """The relations, per entity type, that the named filter reads."""
 
         role_filter = self.role_filters[name]
-        reads = {role_filter.entity_type: set(role_filter.values)}
+        # A filter of any type reads its relations wherever a type has them.
+        types = (
+            self.entity_types
+            if role_filter.entity_type is None
+            else (role_filter.entity_type,)
+        )
+        reads: dict[str, set[str]] = {}
 
-        if role_filter.live:
-            reads[role_filter.entity_type] |= self._status_relations(
-                role_filter.entity_type
+        for entity_type in types:
+            read = set(role_filter.values) & set(
+                self.entity_types[entity_type].relations
             )
+            if role_filter.live:
+                read |= self._status_relations(entity_type)
+            reads[entity_type] = read
+        # A link is never contested, so `of` reads no relation.
         for linker in role_filter.no_live_linkers:
             reads.setdefault(linker.entity_type, set()).update(
                 {linker.link} | self._status_relations(linker.entity_type)

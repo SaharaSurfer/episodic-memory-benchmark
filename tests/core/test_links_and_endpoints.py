@@ -424,6 +424,15 @@ def test_a_filter_the_pack_does_not_hold_is_a_caller_bug() -> None:
         world.decide(filtered(MISSING, ISSUED_IN, "NO_SUCH_FILTER"))
 
 
+def test_a_filter_relating_two_roles_cannot_be_named_by_an_init() -> None:
+    of_case = RoleFilter("ABOUT_CASE", DEPOSIT_ACCOUNT.name, of="case")
+    world = _with_filter(of_case)
+
+    # The endpoint is missing too: the filter is checked before any clause.
+    with pytest.raises(ValueError, match="ABOUT_CASE"):
+        world.decide(filtered(MISSING, ISSUED_IN, of_case.name))
+
+
 def test_a_link_disclosure_is_true_only_of_the_linked_target() -> None:
     world = World()
     account = world.open()
