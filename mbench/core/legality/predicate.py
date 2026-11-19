@@ -42,7 +42,6 @@ from mbench.packs.spec import (
     LoadedPack,
     MutateAction,
     SourceKind,
-    default_source,
 )
 
 
@@ -315,7 +314,7 @@ def _checked_mutate(
     if isinstance(command, AgreeingDoubleDisclosureCommand):
         sources = command.sources
     else:
-        sources = (_default_source(command.initiator, command.source, pack),)
+        sources = (_source(command, pack),)
 
     mutate = _resolve_referent(command, action, writes, sources, registry, pack)
     if isinstance(mutate, Refusal):
@@ -383,7 +382,7 @@ def _checked_init(
     _check_links(command, action, pack)
     _check_fixed_values(command, action)
     _check_no_derived_writes(command, action)
-    source = _default_source(command.initiator, command.source, pack)
+    source = _source(command, pack)
 
     init = _resolve_endpoints(command, action, source, registry, pack)
     if isinstance(init, Refusal):
@@ -654,7 +653,7 @@ def _entity_is_sealed(entry: Entry, pack: LoadedPack) -> bool:
     if not contested:
         return False
 
-    return not contested.isdisjoint(pack.relations_legality_reads(entry.type))
+    return not contested.isdisjoint(pack.relations_legality_reads[entry.type])
 
 
 def _refuse_anchor(
@@ -812,12 +811,13 @@ def _named_sources(command: Command) -> tuple[str, ...]:
     return () if command.source is None else (command.source,)
 
 
-def _default_source(initiator: str, named: str | None, pack: LoadedPack) -> str:
-    """The source of an event's disclosures, the named one if any."""
+def _source(command: InitCommand | MutateCommand, pack: LoadedPack) -> str:
+    """The source of the event's disclosures, the named one if any."""
 
-    return default_source(
-        initiator, named, pack.speakers.values(), pack.sources.values()
-    )
+    if command.source is not None:
+        return command.source
+
+    return pack.default_sources[command.initiator]
 
 
 def _init_action(command: InitCommand, pack: LoadedPack) -> InitAction:
@@ -919,9 +919,9 @@ def _check_derivations(init: _Init, pack: LoadedPack) -> None:
     action = init.action
 
     # The clauses have passed, so every endpoint exists and none is sealed. A
-    # derivation still unanswered has a `via` naming no link, a recipe that
-    # cannot work, or a read `derivation_reads` omits: the pack's bug, and an
-    # entity missing the value would break later reads.
+    # derivation still unanswered has a `via` naming no link or a recipe that
+    # cannot work: the pack's bug, and an entity missing the value would break
+    # later reads.
     unanswered = (action.derives.keys() | action.copied_links.keys()) - (
         init.derived.keys() | init.copied.keys()
     )
@@ -967,6 +967,8 @@ def _written_value(
 def _passes(entry: Entry, gate: Gate) -> bool:
     """Whether the entity holds every relation gated, admitted or contested."""
 
+    # A new kind of read here must be added to `_legality_reads` in
+    # `mbench/packs/spec.py`.
     # A gate cannot judge a conflict. The pack lists what gates read, so
     # sealing refuses the command instead.
     return judge_gate(entry, gate) is not Verdict.FAIL

@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-from mbench.packs.spec import Framing, LoadedPack
+from mbench.packs.spec import Framing, LoadedPack, Speaker
 from tests.testpack.pack import LOADED_PACK
 
 
@@ -78,3 +78,18 @@ def test_a_framing_the_owners_speaker_states_offers_no_initiator() -> None:
     )
 
     assert pack.shared_initiators("LOCK_CARD", "CLOSE_CARD") == frozenset()
+
+
+def test_the_contestable_initiators_follow_who_the_speakers_represent() -> None:
+    # The operator now speaks for the owner, so what it states is uncontested.
+    speakers = {
+        **LOADED_PACK.speakers,
+        "operator": Speaker("operator", "CLIENT"),
+    }
+    pack = replace(LOADED_PACK, speakers=speakers)
+
+    assert LOADED_PACK.contestable_initiators["ISSUE_CARD"] == {
+        "BANK",
+        "CLIENT",
+    }
+    assert pack.contestable_initiators["ISSUE_CARD"] == frozenset()

@@ -292,6 +292,9 @@ class RoleFilter:
         object.__setattr__(self, "values", _frozen_gate(self.values))
 
 
+type _Reads = Mapping[str, frozenset[str]]
+
+
 @dataclass(frozen=True)
 class LoadedPack:
     """What the core reads of a pack: its types, ActionTypes and dialogue."""
@@ -311,10 +314,6 @@ class LoadedPack:
     framings: Mapping[str, tuple[Framing, ...]] = field(
         default_factory=lambda: MappingProxyType({})
     )
-    # Per entity type, the relations an INIT's derivations read of it.
-    derivation_reads: Mapping[str, frozenset[str]] = field(
-        default_factory=lambda: MappingProxyType({})
-    )
     pools: Mapping[str, Pool[Any]] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -328,8 +327,36 @@ class LoadedPack:
         default_factory=lambda: MappingProxyType({})
     )
 
+    # The tables below are derived from the declarations on construction, so
+    # a pack made by `replace` holds its own, never those of its original.
+
+    # Per entity type, the relations some check or derivation reads.
+    relations_legality_reads: _Reads = field(
+        init=False, repr=False, compare=False
+    )
+    # Per role filter, then per entity type, the relations the filter reads.
+    filter_reads: Mapping[str, _Reads] = field(
+        init=False, repr=False, compare=False
+    )
+    # Per entity type, the relations an INIT's derivations read of it.
+    derivation_reads: _Reads = field(init=False, repr=False, compare=False)
+    # Per ActionType with framings, the initiators the owner does not state.
+    contestable_initiators: Mapping[str, frozenset[str]] = field(
+        init=False, repr=False, compare=False
+    )
+    # Per actor, the source of its events when a command names none.
+    default_sources: Mapping[str, str] = field(
+        init=False, repr=False, compare=False
+    )
+    # Per (entity type, relation), the MUTATEs writing it, in declaration
+    # order. Not per transition: a gate on the relation written decides
+    # which MUTATE takes a change, and a status move may have no gate.
+    _writers: Mapping[tuple[str, str], tuple[MutateAction, ...]] = field(
+        init=False, repr=False, compare=False
+    )
+
     def __post_init__(self) -> None:
-        """Hold every table read-only, and refuse names that do not match."""
+        """Hold every table read-only, refuse bad names, derive the queries."""
 
         for table in (
             "entity_types",
@@ -339,7 +366,6 @@ class LoadedPack:
             "sources",
             "role_filters",
             "framings",
-            "derivation_reads",
             "pools",
             "init_samplers",
             "step_samplers",
@@ -378,20 +404,44 @@ class LoadedPack:
             action.name
             for action in self.action_types.values()
             if isinstance(action, InitAction)
-            and not self._fixes_entry_status(action)
+            and not _fixes_entry_status(self.entity_types, action)
         ]
         if unfixed:
             raise ValueError(f"INITs fix no entry status: {sorted(unfixed)}")
 
-    def _fixes_entry_status(self, action: InitAction) -> bool:
-        """Whether the INIT fixes its type's status, if the type has one."""
+        self._derive_tables()
 
-        entity_type = self.entity_types.get(action.referent_type)
+    def _derive_tables(self) -> None:
+        """Compute the tables legality queries, once per pack."""
 
-        return (
-            entity_type is None
-            or entity_type.status is None
-            or entity_type.status in action.fixes
+        filter_reads = {
+            name: _filter_reads(role_filter, self.entity_types)
+            for name, role_filter in self.role_filters.items()
+        }
+        derivation_reads = _derivation_reads(
+            self.entity_types, self.action_types
+        )
+        legality_reads = _legality_reads(
+            self.entity_types,
+            self.action_types,
+            derivation_reads,
+            filter_reads.values(),
+        )
+        contestable = _contestable_initiators(
+            self.framings, self.speakers, self.owner
+        )
+        defaults = _default_sources(self.actors, self.speakers, self.sources)
+
+        set_table = object.__setattr__
+        set_table(self, "filter_reads", MappingProxyType(filter_reads))
+        set_table(self, "derivation_reads", MappingProxyType(derivation_reads))
+        set_table(
+            self, "relations_legality_reads", MappingProxyType(legality_reads)
+        )
+        set_table(self, "contestable_initiators", MappingProxyType(contestable))
+        set_table(self, "default_sources", MappingProxyType(defaults))
+        set_table(
+            self, "_writers", MappingProxyType(_writers(self.action_types))
         )
 
     def action_for(
@@ -399,112 +449,227 @@ class LoadedPack:
     ) -> MutateAction | None:
         """The ActionType that makes this write on this type, if one does."""
 
-        for action in self.action_types.values():
-            if (
-                isinstance(action, MutateAction)
-                and action.referent_type == entity_type
-                and action.relation == relation
-                and action.takes(transition)
-            ):
-                return action
+        candidates = self._writers.get((entity_type, relation), ())
 
-        return None
+        return next(
+            (action for action in candidates if action.takes(transition)),
+            None,
+        )
 
     def passes_owner_rule(self, action: str) -> bool:
         """Whether someone other than the owner's speaker states the action."""
 
-        return bool(self._contestable_initiators(action))
+        return bool(self.contestable_initiators.get(action, frozenset()))
 
     def shared_initiators(self, first: str, second: str) -> frozenset[str]:
         """The initiators both actions have a contestable framing for."""
 
-        return self._contestable_initiators(
-            first
-        ) & self._contestable_initiators(second)
+        initiators = self.contestable_initiators
 
-    def _contestable_initiators(self, action: str) -> frozenset[str]:
-        """The initiators of the action's framings the owner does not state."""
-
-        # The owner can't be unsure of a change it stated itself.
-        owners_speakers = {
-            speaker.id
-            for speaker in self.speakers.values()
-            if speaker.represents == self.owner
-        }
-
-        return frozenset(
-            framing.initiator
-            for framing in self.framings.get(action, ())
-            if framing.source not in owners_speakers
+        return initiators.get(first, frozenset()) & initiators.get(
+            second, frozenset()
         )
 
-    def relations_read(self, name: str) -> Mapping[str, frozenset[str]]:
-        """The relations, per entity type, that the named filter reads."""
 
-        role_filter = self.role_filters[name]
-        # A filter of any type reads its relations wherever a type has them.
-        types = (
-            self.entity_types
-            if role_filter.entity_type is None
-            else (role_filter.entity_type,)
+def _fixes_entry_status(
+    entity_types: Mapping[str, EntityType], action: InitAction
+) -> bool:
+    """Whether the INIT fixes its type's status, if the type has one."""
+
+    entity_type = entity_types.get(action.referent_type)
+
+    return (
+        entity_type is None
+        or entity_type.status is None
+        or entity_type.status in action.fixes
+    )
+
+
+def _status_relations(
+    entity_types: Mapping[str, EntityType], entity_type: str
+) -> set[str]:
+    """The type's status relation, none for a type without one."""
+
+    status = entity_types[entity_type].status
+
+    return set() if status is None else {status}
+
+
+def _gated_relations(
+    entity_types: Mapping[str, EntityType],
+    action_types: Mapping[str, ActionType],
+    entity_type: str,
+) -> set[str]:
+    """The relations of the type that an action or endpoint gate reads."""
+
+    gated: set[str] = set()
+
+    for action in action_types.values():
+        if isinstance(action, MutateAction):
+            if action.referent_type == entity_type:
+                gated.update(action.gate)
+            continue
+
+        targets = entity_types[action.referent_type].links
+        for link, gate in action.links.items():
+            if entity_type in targets[link]:
+                gated.update(gate)
+
+    return gated
+
+
+def _filter_reads(
+    role_filter: RoleFilter, entity_types: Mapping[str, EntityType]
+) -> _Reads:
+    """The relations, per entity type, that the role filter reads."""
+
+    # A filter of any type reads its relations wherever a type has them.
+    types = (
+        entity_types
+        if role_filter.entity_type is None
+        else (role_filter.entity_type,)
+    )
+    reads: dict[str, set[str]] = {}
+
+    for entity_type in types:
+        read = set(role_filter.values) & set(
+            entity_types[entity_type].relations
         )
-        reads: dict[str, set[str]] = {}
+        if role_filter.live:
+            read |= _status_relations(entity_types, entity_type)
+        reads[entity_type] = read
 
-        for entity_type in types:
-            read = set(role_filter.values) & set(
-                self.entity_types[entity_type].relations
-            )
-            if role_filter.live:
-                read |= self._status_relations(entity_type)
-            reads[entity_type] = read
-        # A link is never contested, so `of` reads no relation.
-        for linker in role_filter.no_live_linkers:
-            reads.setdefault(linker.entity_type, set()).update(
-                {linker.link} | self._status_relations(linker.entity_type)
-            )
+    # A link is never contested, so `of` reads no relation.
+    for linker in role_filter.no_live_linkers:
+        reads.setdefault(linker.entity_type, set()).update(
+            {linker.link} | _status_relations(entity_types, linker.entity_type)
+        )
 
-        return {
+    # Read-only itself, as the pack's table holds it under the filter's name.
+    return MappingProxyType(
+        {
             entity_type: frozenset(relations)
             for entity_type, relations in reads.items()
         }
+    )
 
-    def relations_legality_reads(self, entity_type: str) -> frozenset[str]:
-        """The type's relations that some check or derivation reads."""
 
-        filter_reads = (
-            self.relations_read(name).get(entity_type, frozenset())
-            for name in self.role_filters
-        )
+def _derivation_reads(
+    entity_types: Mapping[str, EntityType],
+    action_types: Mapping[str, ActionType],
+) -> _Reads:
+    """The relations, per entity type, that an INIT's `Copy` reads of it."""
 
-        return frozenset(
-            self._status_relations(entity_type).union(
-                self._gated_relations(entity_type),
-                self.derivation_reads.get(entity_type, frozenset()),
-                *filter_reads,
+    reads: dict[str, set[str]] = {name: set() for name in entity_types}
+
+    # A `ByType` reads only the type, a `CopyLink` only a link, so neither
+    # reads a relation. A `via` naming no link is the predicate's to report.
+    for action in action_types.values():
+        if not isinstance(action, InitAction):
+            continue
+        links = entity_types[action.referent_type].links
+        for derivation in action.derives.values():
+            if not isinstance(derivation, Copy):
+                continue
+            for target in links.get(derivation.via, ()):
+                reads.setdefault(target, set()).add(derivation.relation)
+
+    return {
+        entity_type: frozenset(relations)
+        for entity_type, relations in reads.items()
+    }
+
+
+def _legality_reads(
+    entity_types: Mapping[str, EntityType],
+    action_types: Mapping[str, ActionType],
+    derivation_reads: _Reads,
+    filter_reads: Iterable[_Reads],
+) -> _Reads:
+    """The relations, per entity type, that some check or derivation reads."""
+
+    # Mirrors every read site of legality, so a new kind of read there must
+    # be added here: referent and writer gates (`_passes` in the predicate),
+    # INIT endpoint gates, role filters (`role_filters.judge`), liveness, and
+    # derivations (the predicate's `_derive`).
+    filter_reads = tuple(filter_reads)
+
+    return {
+        entity_type: frozenset(
+            _status_relations(entity_types, entity_type).union(
+                _gated_relations(entity_types, action_types, entity_type),
+                derivation_reads.get(entity_type, frozenset()),
+                *(
+                    reads.get(entity_type, frozenset())
+                    for reads in filter_reads
+                ),
             )
         )
+        for entity_type in entity_types
+    }
 
-    def _gated_relations(self, entity_type: str) -> set[str]:
-        """The relations of the type that an action or endpoint gate reads."""
 
-        gated: set[str] = set()
+def _contestable_initiators(
+    framings: Mapping[str, tuple[Framing, ...]],
+    speakers: Mapping[str, Speaker],
+    owner: str,
+) -> Mapping[str, frozenset[str]]:
+    """Per action, the initiators of its framings the owner does not state."""
 
-        for action in self.action_types.values():
-            if isinstance(action, MutateAction):
-                if action.referent_type == entity_type:
-                    gated.update(action.gate)
-                continue
+    # The owner can't be unsure of a change it stated itself.
+    owners_speakers = {
+        speaker.id
+        for speaker in speakers.values()
+        if speaker.represents == owner
+    }
 
-            targets = self.entity_types[action.referent_type].links
-            for link, gate in action.links.items():
-                if entity_type in targets[link]:
-                    gated.update(gate)
+    return {
+        action: frozenset(
+            framing.initiator
+            for framing in group
+            if framing.source not in owners_speakers
+        )
+        for action, group in framings.items()
+    }
 
-        return gated
 
-    def _status_relations(self, entity_type: str) -> set[str]:
-        """The type's status relation, none for a type without one."""
+def _default_sources(
+    actors: Mapping[str, Actor],
+    speakers: Mapping[str, Speaker],
+    sources: Mapping[str, Source],
+) -> Mapping[str, str]:
+    """Per actor, its default source, refusing an actor that has none."""
 
-        status = self.entity_types[entity_type].status
+    defaults: dict[str, str] = {}
+    sourceless: list[str] = []
 
-        return set() if status is None else {status}
+    for actor in actors:
+        try:
+            defaults[actor] = default_source(
+                actor, None, speakers.values(), sources.values()
+            )
+        except LookupError:
+            sourceless.append(actor)
+
+    # Caught here, the pack's bug never waits for a command to run.
+    if sourceless:
+        raise ValueError(
+            f"actors with no speaker and no document: {sorted(sourceless)}"
+        )
+
+    return defaults
+
+
+def _writers(
+    action_types: Mapping[str, ActionType],
+) -> Mapping[tuple[str, str], tuple[MutateAction, ...]]:
+    """Per (entity type, relation), the MUTATEs writing it, in order."""
+
+    writers: dict[tuple[str, str], list[MutateAction]] = {}
+
+    for action in action_types.values():
+        if isinstance(action, MutateAction):
+            key = (action.referent_type, action.relation)
+            writers.setdefault(key, []).append(action)
+
+    return {key: tuple(actions) for key, actions in writers.items()}

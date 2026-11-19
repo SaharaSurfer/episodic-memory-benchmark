@@ -316,10 +316,17 @@ def test_a_type_the_mapping_lacks_is_the_packs_bug() -> None:
         world.decide(issue(world.open(), ISSUED_IN))
 
 
-def test_copying_a_relation_the_source_lacks_is_the_packs_bug() -> None:
-    pack = _with_derives(
-        "ISSUE_REPLACEMENT_CARD", CARD_TYPE, Copy(REPLACES, "noSuchRelation")
-    )
+@pytest.mark.parametrize(
+    "copy",
+    [Copy(REPLACES, "noSuchRelation"), Copy("noSuchLink", CARD_TYPE)],
+    ids=["relation the source lacks", "via a link the init lacks"],
+)
+def test_copying_a_relation_with_nothing_to_copy_is_the_packs_bug(
+    copy: Copy,
+) -> None:
+    # The pack still builds, as a `via` naming no link is the predicate's
+    # to report.
+    pack = _with_derives("ISSUE_REPLACEMENT_CARD", CARD_TYPE, copy)
     world, _, card = _carded_world(pack)
 
     with pytest.raises(LookupError, match=CARD_TYPE):
@@ -358,15 +365,6 @@ def test_copy_link_refuses_a_sealed_account_it_would_copy() -> None:
     world.accept(status_contest(account, CONTESTED_IN, FROZEN, CLOSED))
 
     assert world.decide(replacement(card, LATER)) == ENTITY_SEALED
-
-
-def test_a_contested_value_the_pack_forgot_to_list_is_its_bug() -> None:
-    pack = replace(LOADED_PACK, derivation_reads={})
-    world, _, card = _carded_world(pack)
-    registry = _with_contested_type(world, card)
-
-    with pytest.raises(LookupError, match=CARD_TYPE):
-        check(replacement(card, LATER), registry, pack)
 
 
 def test_the_factory_leaves_derived_values_to_the_predicate() -> None:

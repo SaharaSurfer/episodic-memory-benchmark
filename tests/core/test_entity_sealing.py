@@ -22,7 +22,6 @@ from tests.core.world import (
     BANK_MAY_CLOSE,
     CARD_LINK,
     CARD_WRITES,
-    FEE,
     World,
     agree,
     change_fee,
@@ -35,6 +34,7 @@ from tests.core.world import (
     status_contest,
     with_action,
     with_entity_type,
+    with_fee_copy,
     with_framings,
     with_gate,
     with_issue_gate,
@@ -329,12 +329,7 @@ def test_a_linker_contested_only_elsewhere_still_fails_the_filter() -> None:
 
 
 def test_contesting_a_relation_legality_reads_seals_the_entity() -> None:
-    world = World(
-        replace(
-            LOADED_PACK,
-            derivation_reads={DEPOSIT_ACCOUNT.name: frozenset({FEE})},
-        )
-    )
+    world = World(with_fee_copy(LOADED_PACK))
     account = world.open()
     world.accept(fee_contest(account, CONTESTED_IN))
 

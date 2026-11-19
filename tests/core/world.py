@@ -25,6 +25,7 @@ from mbench.core.records.log import (
 )
 from mbench.core.values.protocol import ValueClass
 from mbench.packs.spec import (
+    Copy,
     EntityType,
     Framing,
     Gate,
@@ -442,6 +443,22 @@ def with_action(
 
     return replace(
         pack, action_types={**pack.action_types, action.name: action}
+    )
+
+
+def with_fee_copy(pack: LoadedPack) -> LoadedPack:
+    """The pack with a card issued at its account's monthly fee."""
+
+    card = pack.entity_types["PAYMENT_CARD"]
+    issue = pack.action_types["ISSUE_CARD"]
+    assert isinstance(issue, InitAction)
+    pack = with_entity_type(
+        pack, replace(card, relations={**card.relations, FEE: MonetaryAmount})
+    )
+
+    return with_action(
+        pack,
+        replace(issue, derives={**issue.derives, FEE: Copy(CARD_LINK, FEE)}),
     )
 
 

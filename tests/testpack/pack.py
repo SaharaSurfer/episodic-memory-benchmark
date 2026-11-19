@@ -282,7 +282,6 @@ LOADED_PACK = LoadedPack(
         role_filter.name: role_filter for role_filter in ROLE_FILTERS
     },
     framings=FRAMINGS,
-    derivation_reads={PAYMENT_CARD.name: frozenset({"cardType"})},
     pools=POOLS,
     init_samplers=INIT_SAMPLERS,
     step_samplers=STEP_SAMPLERS,

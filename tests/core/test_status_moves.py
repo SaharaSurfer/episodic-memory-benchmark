@@ -214,7 +214,10 @@ def test_terminal_statuses_are_read_from_the_pack() -> None:
     )
     pack = replace(
         LOADED_PACK,
-        entity_types={DEPOSIT_ACCOUNT.name: frozen_is_terminal},
+        entity_types={
+            **LOADED_PACK.entity_types,
+            DEPOSIT_ACCOUNT.name: frozen_is_terminal,
+        },
     )
 
     def reprice_when_frozen(world: World) -> AcceptedCommand | Refusal:

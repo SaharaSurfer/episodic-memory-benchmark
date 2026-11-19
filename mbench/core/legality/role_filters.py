@@ -39,6 +39,8 @@ def judge(
     if role_filter.entity_type not in (None, entry.type):
         return Verdict.FAIL
 
+    # A new kind of read here must be added to `_filter_reads` in
+    # `mbench/packs/spec.py`.
     return _all(
         (
             judge_gate(entry, role_filter.values),
