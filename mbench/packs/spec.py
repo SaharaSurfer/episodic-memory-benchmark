@@ -589,9 +589,10 @@ def _legality_reads(
     """The relations, per entity type, that some check or derivation reads."""
 
     # Mirrors every read site of legality, so a new kind of read there must
-    # be added here: referent and writer gates (`_passes` in the predicate),
-    # INIT endpoint gates, role filters (`role_filters.judge`), liveness, and
-    # derivations (the predicate's `_derive`).
+    # be added here: referent and writer gates (`passes` in
+    # `legality/_clauses.py`), INIT endpoint gates, role filters
+    # (`role_filters.judge`), liveness, and derivations (`_derive` in
+    # `legality/_init.py`).
     filter_reads = tuple(filter_reads)
 
     return {
