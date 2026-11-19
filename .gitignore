@@ -7,3 +7,6 @@
 
 # Python bytecode
 __pycache__/
+
+# Hypothesis example database
+.hypothesis/
