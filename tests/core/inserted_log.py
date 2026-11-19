@@ -48,8 +48,9 @@ def insert_commands(
         before = Log(sessions=base.sessions).append(accepted[:boundary])
 
         # A copy, so a command dropped below draws no id from the allocator.
-        trial = copy.copy(allocator)
-        run = DryRun(pack, before, fold_world(before.records, pack), trial)
+        run = DryRun(
+            pack, before, fold_world(before.records, pack), copy.copy(allocator)
+        )
         outcome = draw_and_decide(run, session, stream, factory, pack)
         if not isinstance(outcome, AcceptedCommand):
             continue
@@ -63,7 +64,7 @@ def insert_commands(
 
         accepted = candidate
         inserted.insert(boundary, True)
-        allocator = trial
+        allocator = run.result().allocator
 
     return ExtendedLog(
         log=_extended(base, accepted),

@@ -1,3 +1,4 @@
+import copy
 from dataclasses import replace
 
 import pytest
@@ -17,7 +18,6 @@ from tests.core.world import (
     ISSUED_IN,
     MISSING,
     OPENED_IN,
-    World,
     created_id,
     issue,
     open_account,
@@ -227,6 +227,50 @@ def test_committing_a_run_of_another_builder_raises() -> None:
         _builder().commit(foreign)
 
 
+def test_the_result_of_a_refused_run_raises() -> None:
+    run = _refused_run(_builder())
+
+    with pytest.raises(ValueError, match="refused"):
+        run.result()
+
+
+def test_the_result_of_a_run_refused_a_fill_raises() -> None:
+    run = _builder().dry_run()
+    unfillable = unfilled_fee_change(MISSING, OPENED_IN)
+    assert isinstance(
+        run.fill_and_decide(unfillable, Factory(0, LOADED_PACK)), FillRefusal
+    )
+
+    with pytest.raises(ValueError, match="refused"):
+        run.result()
+
+
+def test_a_result_carries_the_runs_start_steps_and_registry() -> None:
+    builder = _builder()
+    _committed(builder, open_account(OPENED_IN))
+    run = builder.dry_run()
+    opened = _accepted(run, open_account(ISSUED_IN, lastFour=LastFour("8203")))
+
+    result = run.result()
+
+    assert result.start is builder.log
+    assert result.accepted == (opened,)
+    assert result.registry == fold_world(
+        builder.log.append(result.accepted).records, LOADED_PACK
+    )
+
+
+def test_stepping_a_run_after_its_result_draws_nothing_from_it() -> None:
+    run = _builder().dry_run()
+    _accepted(run, open_account(OPENED_IN))
+    result = run.result()
+    expected = copy.copy(result.allocator).allocate()
+
+    _accepted(run, open_account(ISSUED_IN, lastFour=LastFour("8203")))
+
+    assert result.allocator.allocate() == expected
+
+
 class _UnusableFactory(Factory):
     """A factory that fails the test if it is asked to fill anything."""
 
@@ -328,13 +372,3 @@ def test_the_same_session_and_skipped_sessions_are_allowed() -> None:
     _accepted(run, read(account, OPENED_IN + 5))
 
     assert len(run.accepted) == 3
-
-
-def test_world_decide_consumes_no_ids() -> None:
-    undisturbed, disturbed = World(), World()
-
-    assert not isinstance(disturbed.decide(open_account(OPENED_IN)), Refusal)
-
-    assert disturbed.accept(open_account(OPENED_IN)) == undisturbed.accept(
-        open_account(OPENED_IN)
-    )

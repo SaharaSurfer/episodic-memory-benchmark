@@ -1,4 +1,5 @@
 import copy
+from dataclasses import dataclass
 
 from mbench.core.folds.registry import Registry, fold_world
 from mbench.core.legality.predicate import Refusal, decide
@@ -7,6 +8,21 @@ from mbench.core.records.ids import IdAllocator
 from mbench.core.records.log import AcceptedCommand, Log
 from mbench.core.values.factory import Factory, Fillable, FillRefusal
 from mbench.packs.spec import LoadedPack
+
+
+@dataclass(frozen=True)
+class DryRunResult:
+    """What a run that was never refused hands over to be committed.
+
+    Nobody draws from a result's allocator: whoever needs to draw from it
+    copies it first, so one result can be committed without a second copy.
+    """
+
+    # The log the run started at, compared by identity on commit.
+    start: Log
+    accepted: tuple[AcceptedCommand, ...]
+    registry: Registry
+    allocator: IdAllocator
 
 
 class DryRun:
@@ -39,6 +55,19 @@ class DryRun:
         """The registry as of the last accepted step."""
 
         return self._registry
+
+    def result(self) -> DryRunResult:
+        """The run so far, with its own allocator copy, if never refused."""
+
+        self._check_not_refused()
+
+        # A copy, so later steps of this run draw nothing from the result's.
+        return DryRunResult(
+            start=self._log,
+            accepted=self._accepted,
+            registry=self._registry,
+            allocator=copy.copy(self._allocator),
+        )
 
     def decide(self, command: Command) -> AcceptedCommand | Refusal:
         """Decide the command here, folding it in if it is accepted."""
@@ -128,18 +157,16 @@ class LogBuilder:
     def commit(self, run: DryRun) -> None:
         """Add the run's accepted commands to the log, unchanged."""
 
-        run._check_not_refused()
+        result = run.result()
 
         # By identity: another builder's empty log equals this one's.
-        if run._log is not self._log:
+        if result.start is not self._log:
             raise ValueError("the log has moved on from this dry run's start")
 
         # Nothing to add, and a new log object would make other runs stale.
-        if not run.accepted:
+        if not result.accepted:
             return
 
-        self._log = self._log.append(run.accepted)
-        self._registry = run.registry
-
-        # Copied again, so a step on the committed run draws nothing from it.
-        self._allocator = copy.copy(run._allocator)
+        self._log = self._log.append(result.accepted)
+        self._registry = result.registry
+        self._allocator = result.allocator
